@@ -1,5 +1,5 @@
 const { dateTime } = require('./utils/dateTime');
-const { accessibilityLib } = require('./src/accessibilityLib');
+const { getAccessibilityReport, getAccessibilityError, getAccessibilityTotalError } = require('./src/accessibilityLib');
 
 async function accessibilityReport(pageName, count = false) {
   const datatime = dateTime;
@@ -9,7 +9,7 @@ async function accessibilityReport(pageName, count = false) {
 
   // Run the accessibility report and wait for it to complete
   // const report = await accessibilityLib.getAccessibilityReport(pageName);
-  await accessibilityLib.getAccessibilityReport(pageName);
+  await getAccessibilityReport(pageName);
   // const results = await accessibilityLib.getAccessibilityReport(pageName);
   // if (results) {
   //   console.log('Accessibility report results:', results);
@@ -42,8 +42,8 @@ async function accessibilityReport(pageName, count = false) {
    * function for recording total errors from the Accessibility test run
    */
 async function accessibilityError(count) {
-  const totalError = accessibilityLib.getAccessibilityTotalError();
-  const etotalError = accessibilityLib.getAccessibilityError();
+  const totalError = getAccessibilityTotalError();
+  const etotalError = getAccessibilityError();
   if (totalError > 0) {
     cucumberThis.attach('The accessibility rule violation has been observed');
     cucumberThis.attach(`accessibility error count per page : ${etotalError}`);
@@ -51,7 +51,7 @@ async function accessibilityError(count) {
       cucumberThis.attach(`Total accessibility error count : ${totalError}`);
     }
   } else if (totalError <= 0) {
-    const violationcount = accessibilityLib.getAccessibilityError();
+    const violationcount = getAccessibilityError();
     assert.equal(violationcount, 0);
   }
 }
