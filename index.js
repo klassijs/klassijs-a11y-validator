@@ -1,4 +1,5 @@
 const { dateTime } = require('./utils/dateTime');
+const { accessibilityLib } = require('./src/accessibilityLib');
 
 async function accessibilityReport(pageName, count = false) {
   const datatime = dateTime;
