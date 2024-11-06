@@ -55,4 +55,4 @@ async function accessibilityError(count) {
   }
 }
 
-modules.exports = { accessibilityReport, accessibilityError };
+module.exports = { accessibilityReport, accessibilityError };
