@@ -3,6 +3,7 @@ const axe = require('axe-core');
 const fs = require('fs');
 const path = require('path');
 const { astellen } = require('klassijs-astellen');
+const {dateTime} = require('../utils/dateTime');
 
 let errorCount = 0;
 let totalErrorCount = 0;
@@ -68,16 +69,17 @@ function getAccessibilityTotalError() {
   return totalErrorCount;
 }
 
-function generatelAccessibilityReport(fullData, additionalData, pageName, browserName) {
-  const sample = fs.readFileSync(path.resolve(__dirname, './ReportSample'), 'utf-8');
+async function generatelAccessibilityReport(fullData, additionalData, pageName, browserName) {
+  const sample = fs.readFileSync(path.resolve(__dirname, 'ReportSample'), 'utf-8');
   const addDataInHtml = sample.replace('XXX-DetailData', JSON.stringify(fullData));
 
   let finalHtml = addDataInHtml.replace('XXX-AdditinalData', JSON.stringify(additionalData));
   finalHtml = finalHtml.replace('XXX-PageName', pageName);
 
   const dirAcc = `${paths.reports}/${browserName}/${envName}/accessibilityReport`;
-  const datatime = helpers.reportDateTime();
+  const datatime = await dateTime();
   const fileName = `${pageName}-${browserName}_${datatime}`;
+  console.log('Generating Axe Report......########################### ', fileName);
 
   if (!fs.existsSync(dirAcc)) {
     fs.mkdirSync(dirAcc);
