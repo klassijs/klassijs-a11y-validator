@@ -1,0 +1,27 @@
+{
+  "name": "klassijs-avtest",
+  "version": "1.0.0",
+  "description": "",
+  "creator": {
+    "name": "Larry Goddard",
+    "email": "larryg@klassitech.co.uk",
+    "twitter": "https://twitter.com/larryG_01",
+    "linkedin": "https://linkedin.com/in/larryg",
+    "youtube": "https://youtube.com/@LarryG_01"
+  },
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/klassijs/klassijs-avtest.git"
+  },
+  "private": true,
+  "dependencies": {
+    "axe-core": "^4.10.2",
+    "dotenv": "^16.4.5",
+    "fs-extra": "^11.2.0",
+    "klassijs-astellen": "github:klassijs/klassijs-astellen"
+  }
+}
