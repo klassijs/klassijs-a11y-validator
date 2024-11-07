@@ -84,11 +84,11 @@ async function generatelAccessibilityReport(fullData, additionalData, pageName, 
     fs.mkdirSync(dirAcc);
   }
   fs.writeFileSync(dirAcc + '/' + fileName + '.json', JSON.stringify(fullData, null, 4));
+  let accessibilityReportList = [];
   fs.writeFileSync(
     dirAcc + '/' + fileName + '.html',
     finalHtml,
     'utf-8',
-    // eslint-disable-next-line no-undef
     accessibilityReportList.push({
       filename: `${fileName}.html`,
       path: `${dirAcc}/${fileName}.html`,

@@ -19,7 +19,7 @@ importers:
         version: 11.2.0
       klassijs-astellen:
         specifier: github:klassijs/klassijs-astellen
-        version: klassijs-getsetter@git+https://git@github.com:klassijs/klassijs-astellen.git#87174e153fb94d83e713029d77bc05377fc869b0
+        version: https://codeload.github.com/klassijs/klassijs-astellen/tar.gz/18d105f146ed692d055bdcc0c552de4b243813dd
 
 packages:
 
@@ -41,8 +41,8 @@ packages:
   jsonfile@6.1.0:
     resolution: {integrity: sha512-5dgndWOriYSm5cnYaJNhalLNDKOqFwyDB/rr1E9ZsGciGvKPs8R2xYGCacuf3z6K1YKDz182fd+fY3cn3pMqXQ==}
 
-  klassijs-getsetter@git+https://git@github.com:klassijs/klassijs-astellen.git#87174e153fb94d83e713029d77bc05377fc869b0:
-    resolution: {commit: 87174e153fb94d83e713029d77bc05377fc869b0, repo: git@github.com:klassijs/klassijs-astellen.git, type: git}
+  klassijs-astellen@https://codeload.github.com/klassijs/klassijs-astellen/tar.gz/18d105f146ed692d055bdcc0c552de4b243813dd:
+    resolution: {tarball: https://codeload.github.com/klassijs/klassijs-astellen/tar.gz/18d105f146ed692d055bdcc0c552de4b243813dd}
     version: 1.0.0
 
   universalify@2.0.1:
@@ -69,6 +69,6 @@ snapshots:
     optionalDependencies:
       graceful-fs: 4.2.11
 
-  klassijs-getsetter@git+https://git@github.com:klassijs/klassijs-astellen.git#87174e153fb94d83e713029d77bc05377fc869b0: {}
+  klassijs-astellen@https://codeload.github.com/klassijs/klassijs-astellen/tar.gz/18d105f146ed692d055bdcc0c552de4b243813dd: {}
 
   universalify@2.0.1: {}
