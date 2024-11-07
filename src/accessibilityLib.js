@@ -79,7 +79,6 @@ async function generatelAccessibilityReport(fullData, additionalData, pageName, 
   const dirAcc = `${paths.reports}/${browserName}/${envName}/accessibilityReport`;
   const datatime = await dateTime();
   const fileName = `${pageName}-${browserName}_${datatime}`;
-  console.log('Generating Axe Report......########################### ', fileName);
 
   if (!fs.existsSync(dirAcc)) {
     fs.mkdirSync(dirAcc);

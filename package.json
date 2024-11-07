@@ -1,13 +1,14 @@
 {
   "name": "klassijs-avtest",
   "version": "1.0.0",
-  "description": "",
+  "description": "The Accessibility Testing Library",
   "creator": {
     "name": "Larry Goddard",
     "email": "larryg@klassitech.co.uk",
     "twitter": "https://twitter.com/larryG_01",
     "linkedin": "https://linkedin.com/in/larryg",
-    "youtube": "https://youtube.com/@LarryG_01"
+    "youtube": "https://youtube.com/@LarryG_01",
+    "github": "https://github.com/klassijs"
   },
   "main": "index.js",
   "scripts": {
