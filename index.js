@@ -1,10 +1,10 @@
 const path = require('path');
 
-const {dateTime} = require('./utils/dateTime');
+// const {dateTime} = require('./utils/dateTime');
 const { getAccessibilityReport, getAccessibilityError, getAccessibilityTotalError } = require('./src/accessibilityLib');
 const fs = require("fs");
 
-const envName = env.envName.toLowerCase();
+// const envName = env.envName.toLowerCase();
 
 const accessibility_lib = path.resolve(__dirname, './src/accessibilityLib.js');
 if (fs.existsSync(accessibility_lib)) {
@@ -14,26 +14,9 @@ if (fs.existsSync(accessibility_lib)) {
 } else console.error('No Accessibility Lib');
 
 async function accessibilityReport(pageName, count = false) {
-  const datatime = await dateTime();
-  await browser.pause(DELAY_1s);
-
   // Run the accessibility report and wait for it to complete
   await getAccessibilityReport(pageName);
-
-  // Placeholder for where you generate the HTML report link or process the result
-  console.log(
-    'this is a placeholder for html links ============ ',
-    path.resolve(
-      paths.reports,
-      browserName,
-      envName,
-      'accessibilityReport',
-      `${pageName}-${browserName}_${datatime}.html`,
-    ),
-  );
-
   await accessibilityError(count);
-  await browser.pause(DELAY_2s);
 }
 
 /**
