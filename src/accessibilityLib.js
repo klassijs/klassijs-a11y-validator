@@ -84,7 +84,7 @@ async function generatelAccessibilityReport(fullData, additionalData, pageName, 
     fs.mkdirSync(dirAcc);
   }
   fs.writeFileSync(dirAcc + '/' + fileName + '.json', JSON.stringify(fullData, null, 4));
-  let accessibilityReportList = [];
+  // let accessibilityReportList = [];
   fs.writeFileSync(
     dirAcc + '/' + fileName + '.html',
     finalHtml,
@@ -95,6 +95,8 @@ async function generatelAccessibilityReport(fullData, additionalData, pageName, 
     }),
   );
 }
+
+
 
 module.exports = {
   getAccessibilityReport,

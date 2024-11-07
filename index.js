@@ -2,8 +2,16 @@ const path = require('path');
 
 const {dateTime} = require('./utils/dateTime');
 const { getAccessibilityReport, getAccessibilityError, getAccessibilityTotalError } = require('./src/accessibilityLib');
+const fs = require("fs");
 
 const envName = env.envName.toLowerCase();
+
+const accessibility_lib = path.resolve(__dirname, './src/accessibilityLib.js');
+if (fs.existsSync(accessibility_lib)) {
+  const rList = [];
+  global.accessibilityLib = require(accessibility_lib);
+  global.accessibilityReportList = rList;
+} else console.error('No Accessibility Lib');
 
 async function accessibilityReport(pageName, count = false) {
   const datatime = await dateTime();
