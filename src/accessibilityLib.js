@@ -70,7 +70,7 @@ function getAccessibilityTotalError() {
 }
 
 async function generatelAccessibilityReport(fullData, additionalData, pageName, browserName) {
-  const sample = fs.readFileSync(path.resolve(__dirname, 'ReportSample'), 'utf-8');
+  const sample = fs.readFileSync(path.resolve(__dirname, '../utils/ReportSample'), 'utf-8');
   const addDataInHtml = sample.replace('XXX-DetailData', JSON.stringify(fullData));
 
   let finalHtml = addDataInHtml.replace('XXX-AdditinalData', JSON.stringify(additionalData));
