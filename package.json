@@ -1,14 +1,13 @@
 {
   "name": "klassijs-avtest",
   "version": "1.0.0",
-  "description": "The Accessibility Testing Library",
+  "description": "This accessibility verification function serves as an automated accessibility testing tool that helps identify and document accessibility issues based on WCAG standards.",
   "creator": {
     "name": "Larry Goddard",
     "email": "larryg@klassitech.co.uk",
     "twitter": "https://twitter.com/larryG_01",
     "linkedin": "https://linkedin.com/in/larryg",
-    "youtube": "https://youtube.com/@LarryG_01",
-    "github": "https://github.com/klassijs"
+    "youtube": "https://youtube.com/@LarryG_01"
   },
   "main": "index.js",
   "scripts": {
@@ -16,9 +15,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/klassijs/klassijs-avtest.git"
+    "url": "https://github.com/klassijs/klassijs-avt-service.git"
   },
-  "private": true,
   "dependencies": {
     "axe-core": "^4.10.2",
     "dotenv": "^16.4.5",
