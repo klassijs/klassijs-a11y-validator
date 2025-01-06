@@ -8,18 +8,26 @@
     "linkedin": "https://linkedin.com/in/larryg",
     "youtube": "https://youtube.com/@LarryG_01"
   },
+  "keywords": [
+    "accessibility",
+    "a11y",
+    "wcag",
+    "axe-core",
+    "axe",
+    "accessibility testing",
+    "accessibility verification"
+  ],
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/klassijs/klassijs-avt-service.git"
+    "url": "https://github.com/klassijs/klassijs-a11y-validator.git"
   },
   "dependencies": {
     "axe-core": "^4.10.2",
     "dotenv": "^16.4.5",
-    "fs-extra": "^11.2.0",
     "klassijs-astellen": "^1.0.0"
   }
 }

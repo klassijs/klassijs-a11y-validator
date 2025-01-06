@@ -10,7 +10,7 @@ if (fs.existsSync(accessibility_lib)) {
   global.accessibilityReportList = rList;
 } else console.error('No Accessibility Lib');
 
-async function accessibilityReport(pageName, count = false) {
+async function a11yValidator(pageName, count = false) {
   // Run the accessibility report and wait for it to complete
   await getAccessibilityReport(pageName);
   await accessibilityError(count);
@@ -34,4 +34,4 @@ async function accessibilityError(count) {
   }
 }
 
-module.exports = { accessibilityReport };
+module.exports = { a11yValidator };
