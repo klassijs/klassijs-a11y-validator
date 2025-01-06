@@ -18,8 +18,8 @@ importers:
         specifier: ^11.2.0
         version: 11.2.0
       klassijs-astellen:
-        specifier: github:klassijs/klassijs-astellen
-        version: https://codeload.github.com/klassijs/klassijs-astellen/tar.gz/18d105f146ed692d055bdcc0c552de4b243813dd
+        specifier: ^1.0.0
+        version: 1.0.0
 
 packages:
 
@@ -41,9 +41,8 @@ packages:
   jsonfile@6.1.0:
     resolution: {integrity: sha512-5dgndWOriYSm5cnYaJNhalLNDKOqFwyDB/rr1E9ZsGciGvKPs8R2xYGCacuf3z6K1YKDz182fd+fY3cn3pMqXQ==}
 
-  klassijs-astellen@https://codeload.github.com/klassijs/klassijs-astellen/tar.gz/18d105f146ed692d055bdcc0c552de4b243813dd:
-    resolution: {tarball: https://codeload.github.com/klassijs/klassijs-astellen/tar.gz/18d105f146ed692d055bdcc0c552de4b243813dd}
-    version: 1.0.0
+  klassijs-astellen@1.0.0:
+    resolution: {integrity: sha512-os8x9WSkBmPgIsYStku87VcqahBoNVxcCHzn7tgoDnUmuYJu/jNfn3E+NVVsRf8rD9wtxrMRy5Hid/1MJh6dKg==}
 
   universalify@2.0.1:
     resolution: {integrity: sha512-gptHNQghINnc/vTGIk0SOFGFNXw7JVrlRUtConJRlvaw6DuX0wO5Jeko9sWrMBhh+PsYAZ7oXAiOnf/UKogyiw==}
@@ -69,6 +68,6 @@ snapshots:
     optionalDependencies:
       graceful-fs: 4.2.11
 
-  klassijs-astellen@https://codeload.github.com/klassijs/klassijs-astellen/tar.gz/18d105f146ed692d055bdcc0c552de4b243813dd: {}
+  klassijs-astellen@1.0.0: {}
 
   universalify@2.0.1: {}

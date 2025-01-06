@@ -2,7 +2,7 @@
 
 ## Overview
 
-This function is designed to automate the **verification of accessibility compliance** for digital content, such as websites or applications, by programmatically testing elements against established accessibility standards (e.g., WCAG 2.1/2.2). The function aims to ensure a more inclusive user experience, especially for individuals with disabilities, by identifying and helping resolve accessibility issues.
+This function is designed to automate the **verification of accessibility compliance** for digital content, such as websites or applications, by programmatically testing elements against established accessibility standards (e.g., WCAG 2.0,2.1,2.2 on level A, AA and AAA). The function aims to ensure a more inclusive user experience, especially for individuals with disabilities, by identifying and helping resolve accessibility issues.
 
 #### Key Features:
 

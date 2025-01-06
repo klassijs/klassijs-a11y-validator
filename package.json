@@ -1,11 +1,10 @@
 {
-  "name": "klassijs-avtest",
+  "name": "klassijs-avt-service",
   "version": "1.0.0",
   "description": "This accessibility verification function serves as an automated accessibility testing tool that helps identify and document accessibility issues based on WCAG standards.",
   "creator": {
     "name": "Larry Goddard",
     "email": "larryg@klassitech.co.uk",
-    "twitter": "https://twitter.com/larryG_01",
     "linkedin": "https://linkedin.com/in/larryg",
     "youtube": "https://youtube.com/@LarryG_01"
   },
@@ -21,6 +20,6 @@
     "axe-core": "^4.10.2",
     "dotenv": "^16.4.5",
     "fs-extra": "^11.2.0",
-    "klassijs-astellen": "github:klassijs/klassijs-astellen"
+    "klassijs-astellen": "^1.0.0"
   }
 }
