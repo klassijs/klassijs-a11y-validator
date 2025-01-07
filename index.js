@@ -1,6 +1,6 @@
 const path = require('path');
 
-const { getAccessibilityReport, getAccessibilityError, getAccessibilityTotalError } = require('./src/accessibilityLib');
+const { getA11yValidator, getAccessibilityError, getAccessibilityTotalError } = require('./src/accessibilityLib');
 const fs = require("fs");
 
 const accessibility_lib = path.resolve(__dirname, './src/accessibilityLib.js');
@@ -12,7 +12,7 @@ if (fs.existsSync(accessibility_lib)) {
 
 async function a11yValidator(pageName, count = false) {
   // Run the accessibility report and wait for it to complete
-  await getAccessibilityReport(pageName);
+  await getA11yValidator(pageName);
   await accessibilityError(count);
 }
 

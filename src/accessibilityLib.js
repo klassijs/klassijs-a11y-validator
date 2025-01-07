@@ -10,7 +10,7 @@ let totalErrorCount = 0;
 
 const envName = env.envName.toLowerCase();
 
-async function getAccessibilityReport(pageName) {
+async function getA11yValidator(pageName) {
   pageName = pageName || 'pageNameNotAvailable';
 
   await browser.execute(require('axe-core').source);
@@ -96,7 +96,7 @@ async function generatelAccessibilityReport(fullData, additionalData, pageName, 
 }
 
 module.exports = {
-  getAccessibilityReport,
+  getA11yValidator,
   getAccessibilityError,
   getAccessibilityTotalError,
 };
