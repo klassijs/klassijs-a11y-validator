@@ -8,7 +8,10 @@ const {dateTime} = require('../utils/dateTime');
 let errorCount = 0;
 let totalErrorCount = 0;
 
+astellen.set('BROWSER_NAME', browserName);
 const envName = env.envName.toLowerCase();
+
+console.log('envName ====================', envName);
 
 async function getA11yValidator(pageName) {
   pageName = pageName || 'pageNameNotAvailable';
@@ -76,7 +79,8 @@ async function generatelAccessibilityReport(fullData, additionalData, pageName, 
   let finalHtml = addDataInHtml.replace('XXX-AdditinalData', JSON.stringify(additionalData));
   finalHtml = finalHtml.replace('XXX-PageName', pageName);
 
-  const dirAcc = `${paths.reports}/${browserName}/${envName}/accessibilityReport`;
+  // const dirAcc = `${path.reports}/${browserName}/${envName}/accessibilityReport`;
+  const dirAcc = `${browserName}/${envName}/accessibilityReport`;
   const datatime = await dateTime();
   const fileName = `${pageName}-${browserName}_${datatime}`;
 
