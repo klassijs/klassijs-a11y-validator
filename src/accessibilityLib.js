@@ -11,8 +11,6 @@ let totalErrorCount = 0;
 astellen.set('BROWSER_NAME', browserName);
 const envName = env.envName.toLowerCase();
 
-console.log('envName ====================', envName);
-
 async function getA11yValidator(pageName) {
   pageName = pageName || 'pageNameNotAvailable';
 
@@ -55,7 +53,7 @@ async function getA11yValidator(pageName) {
 
   const additionalData = await browser.capabilities;
   const browserName = astellen.get('BROWSER_NAME');
-  console.log('Generating Axe Report........');
+  console.info('Generating Axe Report........');
   await generatelAccessibilityReport(results, additionalData, pageName, browserName);
 
   errorCount = results.violations.length + results.incomplete.length;

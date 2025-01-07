@@ -1,7 +1,7 @@
 const path = require('path');
+const fs = require("fs");
 
 const { getA11yValidator, getAccessibilityError, getAccessibilityTotalError } = require('./src/accessibilityLib');
-const fs = require("fs");
 
 const accessibility_lib = path.resolve(__dirname, './src/accessibilityLib.js');
 if (fs.existsSync(accessibility_lib)) {
