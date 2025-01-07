@@ -1,5 +1,5 @@
 {
-  "name": "klassijs-avt-service",
+  "name": "klassijs-a11y-validator",
   "version": "1.0.0",
   "description": "This accessibility verification function serves as an automated accessibility testing tool that helps identify and document accessibility issues based on WCAG standards.",
   "creator": {
