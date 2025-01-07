@@ -79,8 +79,7 @@ async function generatelAccessibilityReport(fullData, additionalData, pageName, 
   let finalHtml = addDataInHtml.replace('XXX-AdditinalData', JSON.stringify(additionalData));
   finalHtml = finalHtml.replace('XXX-PageName', pageName);
 
-  // const dirAcc = `${path.reports}/${browserName}/${envName}/accessibilityReport`;
-  const dirAcc = `${browserName}/${envName}/accessibilityReport`;
+  const dirAcc = `${paths.reports}/${browserName}/${envName}/accessibilityReport`;
   const datatime = await dateTime();
   const fileName = `${pageName}-${browserName}_${datatime}`;
 
