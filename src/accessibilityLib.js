@@ -2,14 +2,12 @@ require('dotenv').config();
 const axe = require('axe-core');
 const fs = require('fs');
 const path = require('path');
-const { astellen } = require('klassijs-astellen');
 const {dateTime} = require('../utils/dateTime');
 
 let errorCount = 0;
 let totalErrorCount = 0;
 
-astellen.set('BROWSER_NAME', browserName);
-const envName = env.envName.toLowerCase();
+let browserName = global.browserName;
 
 async function getA11yValidator(pageName) {
   pageName = pageName || 'pageNameNotAvailable';
@@ -71,6 +69,8 @@ function getAccessibilityTotalError() {
 }
 
 async function generatelAccessibilityReport(fullData, additionalData, pageName, browserName) {
+
+  const envName = env.envName.toLowerCase();
   const sample = fs.readFileSync(path.resolve(__dirname, '../utils/ReportSample'), 'utf-8');
   const addDataInHtml = sample.replace('XXX-DetailData', JSON.stringify(fullData));
 
