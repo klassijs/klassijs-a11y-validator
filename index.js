@@ -491,13 +491,16 @@ async function a11yValidatorFromUrl(url, options = {}) {
   // Save page map and page list to files (reuse the helper function)
   await saveSitemapFiles();
 
-  // Report final results
-  await accessibilityError(count);
-
   // Calculate total duration (crawl + testing)
   const totalEndTime = Date.now();
   const totalDurationMs = totalEndTime - crawlStartTime;
   const totalDuration = formatDuration(totalDurationMs);
+
+  // Generate comprehensive summary report (groups pages by same issues)
+  await generateComprehensiveReport(results, domain, crawlDuration, totalDuration);
+
+  // Report final results
+  await accessibilityError(count);
   
   console.info(`\n${'='.repeat(60)}`);
   console.info(`Final Validation Summary`);
@@ -526,6 +529,628 @@ async function a11yValidatorFromUrl(url, options = {}) {
   console.info(`${'='.repeat(60)}\n`);
 
   return results;
+}
+
+/**
+ * Generates a comprehensive summary report that groups pages by the same accessibility issues
+ * @param {Object} results - Test results object
+ * @param {string} domain - Domain being tested
+ * @param {string} crawlDuration - Duration of crawl
+ * @param {string} totalDuration - Total duration (crawl + testing)
+ */
+async function generateComprehensiveReport(results, domain, crawlDuration, totalDuration) {
+  try {
+    const envName = global.env?.envName?.toLowerCase() || 'test';
+    const browserName = global.browserName || 'chrome';
+    const reportsDir = global.paths?.reports || './reports';
+    const summaryDir = `${reportsDir}/summary`;
+    const accessibilityReportsDir = `${reportsDir}/accessibility/${browserName}/${envName}`;
+    
+    // Check if accessibility reports directory exists
+    if (!fs.existsSync(accessibilityReportsDir)) {
+      console.warn('No accessibility reports found. Skipping comprehensive summary generation.');
+      return;
+    }
+    
+    // Create summary directory if it doesn't exist
+    if (!fs.existsSync(summaryDir)) {
+      fs.mkdirSync(summaryDir, { recursive: true });
+    }
+    
+    // Read all individual page reports
+    const pageReports = [];
+    const reportFiles = fs.readdirSync(accessibilityReportsDir).filter(file => file.endsWith('.json'));
+    
+    if (reportFiles.length === 0) {
+      console.warn('No JSON report files found. Skipping comprehensive summary generation.');
+      return;
+    }
+    
+    for (const file of reportFiles) {
+      try {
+        const filePath = path.join(accessibilityReportsDir, file);
+        const reportData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        
+        // Extract page name from filename
+        const pageName = file.replace(`-${browserName}_`, '_').replace('.json', '');
+        const pageUrl = reportData.url || '';
+        
+        pageReports.push({
+          pageName,
+          url: pageUrl,
+          violations: reportData.violations || [],
+          incomplete: reportData.incomplete || [],
+          passes: reportData.passes || [],
+          inapplicable: reportData.inapplicable || [],
+        });
+      } catch (e) {
+        console.warn(`Could not read report file ${file}: ${e.message}`);
+      }
+    }
+    
+    // Group violations by rule ID
+    const violationsByRule = {};
+    const incompleteByRule = {};
+    
+    pageReports.forEach(pageReport => {
+      // Process violations
+      pageReport.violations.forEach(violation => {
+        const ruleId = violation.id;
+        if (!violationsByRule[ruleId]) {
+          violationsByRule[ruleId] = {
+            id: ruleId,
+            description: violation.description,
+            help: violation.help,
+            helpUrl: violation.helpUrl,
+            impact: violation.impact,
+            tags: violation.tags || [],
+            pages: [],
+            totalInstances: 0,
+          };
+        }
+        
+        const instanceCount = violation.nodes?.length || 0;
+        violationsByRule[ruleId].pages.push({
+          url: pageReport.url,
+          pageName: pageReport.pageName,
+          instances: instanceCount,
+          nodes: violation.nodes || [],
+        });
+        violationsByRule[ruleId].totalInstances += instanceCount;
+      });
+      
+      // Process incomplete checks
+      pageReport.incomplete.forEach(incomplete => {
+        const ruleId = incomplete.id;
+        if (!incompleteByRule[ruleId]) {
+          incompleteByRule[ruleId] = {
+            id: ruleId,
+            description: incomplete.description,
+            help: incomplete.help,
+            helpUrl: incomplete.helpUrl,
+            impact: incomplete.impact,
+            tags: incomplete.tags || [],
+            pages: [],
+            totalInstances: 0,
+          };
+        }
+        
+        const instanceCount = incomplete.nodes?.length || 0;
+        incompleteByRule[ruleId].pages.push({
+          url: pageReport.url,
+          pageName: pageReport.pageName,
+          instances: instanceCount,
+          nodes: incomplete.nodes || [],
+        });
+        incompleteByRule[ruleId].totalInstances += instanceCount;
+      });
+    });
+    
+    // Calculate statistics
+    const totalPages = pageReports.length;
+    const pagesWithViolations = new Set();
+    const pagesWithIncomplete = new Set();
+    
+    Object.values(violationsByRule).forEach(rule => {
+      rule.pages.forEach(page => pagesWithViolations.add(page.url));
+    });
+    
+    Object.values(incompleteByRule).forEach(rule => {
+      rule.pages.forEach(page => pagesWithIncomplete.add(page.url));
+    });
+    
+    // Identify site-wide issues (affecting >50% of pages)
+    const siteWideViolations = Object.values(violationsByRule)
+      .filter(rule => rule.pages.length > totalPages * 0.5)
+      .sort((a, b) => b.pages.length - a.pages.length);
+    
+    const siteWideIncomplete = Object.values(incompleteByRule)
+      .filter(rule => rule.pages.length > totalPages * 0.5)
+      .sort((a, b) => b.pages.length - a.pages.length);
+    
+    // Sort violations by number of affected pages (most common first)
+    const sortedViolations = Object.values(violationsByRule)
+      .sort((a, b) => b.pages.length - a.pages.length);
+    
+    const sortedIncomplete = Object.values(incompleteByRule)
+      .sort((a, b) => b.pages.length - a.pages.length);
+    
+    // Generate timestamp
+    const timestamp = await dateTime();
+    const baseFileName = `comprehensive-summary-${domain}-${timestamp}`;
+    
+    // Save JSON summary
+    const summaryData = {
+      domain,
+      totalPages,
+      pagesWithViolations: pagesWithViolations.size,
+      pagesWithIncomplete: pagesWithIncomplete.size,
+      totalViolations: Object.keys(violationsByRule).length,
+      totalIncomplete: Object.keys(incompleteByRule).length,
+      siteWideViolations: siteWideViolations.length,
+      siteWideIncomplete: siteWideIncomplete.length,
+      crawlDuration,
+      totalDuration,
+      generatedAt: new Date().toISOString(),
+      violationsByRule: sortedViolations,
+      incompleteByRule: sortedIncomplete,
+      siteWideViolationsList: siteWideViolations,
+      siteWideIncompleteList: siteWideIncomplete,
+      allPages: pageReports.map(p => ({ url: p.url, pageName: p.pageName })),
+    };
+    
+    const jsonFile = `${summaryDir}/${baseFileName}.json`;
+    fs.writeFileSync(jsonFile, JSON.stringify(summaryData, null, 2), 'utf-8');
+    console.info(`\nComprehensive summary (JSON) saved to: ${jsonFile}`);
+    
+    // Generate HTML summary report
+    const htmlFile = `${summaryDir}/${baseFileName}.html`;
+    const htmlContent = generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, siteWideViolations, siteWideIncomplete);
+    fs.writeFileSync(htmlFile, htmlContent, 'utf-8');
+    console.info(`Comprehensive summary (HTML) saved to: ${htmlFile}`);
+    
+  } catch (error) {
+    console.warn('Could not generate comprehensive summary report:', error.message);
+  }
+}
+
+/**
+ * Generates HTML content for the comprehensive summary report
+ */
+function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, siteWideViolations, siteWideIncomplete) {
+  const { domain, totalPages, pagesWithViolations, pagesWithIncomplete, totalViolations, totalIncomplete, siteWideViolations: siteWideCountFromData, siteWideIncomplete: siteWideIncompleteCount, crawlDuration, totalDuration, generatedAt } = summaryData;
+  
+  let html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Comprehensive Accessibility Summary - ${domain}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; background: #f5f5f5; padding: 20px; line-height: 1.6; }
+        .container { max-width: 1400px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; margin-bottom: 30px; }
+        h2 { color: #34495e; margin-top: 30px; margin-bottom: 15px; padding: 10px; background: #ecf0f1; border-left: 4px solid #3498db; }
+        h3 { color: #555; margin-top: 20px; margin-bottom: 10px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
+        .stat-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; text-align: center; }
+        .stat-card.warning { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+        .stat-card.success { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+        .stat-card.info { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); }
+        .stat-number { font-size: 2.5em; font-weight: bold; margin: 10px 0; }
+        .stat-label { font-size: 0.9em; opacity: 0.9; }
+        .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin: 30px 0; }
+        .chart-container { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .chart-container h3 { margin-bottom: 15px; color: #34495e; }
+        .chart-wrapper { position: relative; height: 300px; }
+        .violation-group { margin: 25px 0; padding: 20px; background: #fff; border: 1px solid #ddd; border-radius: 6px; border-left: 4px solid #e74c3c; }
+        .violation-group.site-wide { border-left-color: #f39c12; background: #fffbf0; }
+        .violation-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .violation-title { font-size: 1.2em; font-weight: bold; color: #2c3e50; }
+        .violation-meta { font-size: 0.9em; color: #7f8c8d; }
+        .impact-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 0.85em; font-weight: bold; margin-left: 10px; }
+        .impact-serious { background: #e74c3c; color: white; }
+        .impact-moderate { background: #f39c12; color: white; }
+        .impact-minor { background: #3498db; color: white; }
+        .impact-critical { background: #8e44ad; color: white; }
+        .pages-list { margin-top: 15px; }
+        .page-item { padding: 10px; margin: 5px 0; background: #f8f9fa; border-left: 3px solid #3498db; border-radius: 4px; }
+        .page-item:hover { background: #e9ecef; }
+        .page-url { color: #3498db; text-decoration: none; font-weight: 500; }
+        .page-url:hover { text-decoration: underline; }
+        .instances-count { display: inline-block; background: #e74c3c; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.85em; margin-left: 10px; }
+        .help-link { color: #3498db; text-decoration: none; font-size: 0.9em; }
+        .help-link:hover { text-decoration: underline; }
+        .tags { margin-top: 10px; }
+        .tag { display: inline-block; background: #ecf0f1; padding: 4px 10px; border-radius: 12px; font-size: 0.8em; margin: 3px; color: #555; }
+        .summary-section { margin: 30px 0; padding: 20px; background: #f8f9fa; border-radius: 6px; }
+        .no-issues { text-align: center; padding: 40px; color: #27ae60; font-size: 1.2em; }
+        .site-wide-badge { display: inline-block; background: #f39c12; color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.8em; margin-left: 10px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Comprehensive Accessibility Summary</h1>
+        <div class="summary-section">
+            <h3>Domain: ${domain}</h3>
+            <p><strong>Generated:</strong> ${new Date(generatedAt).toLocaleString()}</p>
+            <p><strong>Crawl Duration:</strong> ${crawlDuration}</p>
+            <p><strong>Total Duration:</strong> ${totalDuration}</p>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-number">${totalPages}</div>
+                <div class="stat-label">Total Pages Tested</div>
+            </div>
+            <div class="stat-card warning">
+                <div class="stat-number">${pagesWithViolations}</div>
+                <div class="stat-label">Pages with Violations</div>
+            </div>
+            <div class="stat-card info">
+                <div class="stat-number">${pagesWithIncomplete}</div>
+                <div class="stat-label">Pages Needing Review</div>
+            </div>
+            <div class="stat-card warning">
+                <div class="stat-number">${totalViolations}</div>
+                <div class="stat-label">Unique Violation Types</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">${siteWideCountFromData}</div>
+                <div class="stat-label">Site-Wide Issues</div>
+            </div>
+        </div>
+        
+        <h2>📈 Visual Analytics</h2>
+        <div class="charts-grid">
+            <div class="chart-container">
+                <h3>Top Violations by Type</h3>
+                <div class="chart-wrapper">
+                    <canvas id="violationsChart"></canvas>
+                </div>
+            </div>
+            <div class="chart-container">
+                <h3>Impact Level Distribution</h3>
+                <div class="chart-wrapper">
+                    <canvas id="impactChart"></canvas>
+                </div>
+            </div>
+            <div class="chart-container">
+                <h3>Pages with Most Violations</h3>
+                <div class="chart-wrapper">
+                    <canvas id="pagesChart"></canvas>
+                </div>
+            </div>
+            <div class="chart-container">
+                <h3>Site-Wide vs Page-Specific Issues</h3>
+                <div class="chart-wrapper">
+                    <canvas id="scopeChart"></canvas>
+                </div>
+            </div>
+        </div>`;
+  
+  // Prepare chart data
+  const topViolations = sortedViolations.slice(0, 10).map(v => ({
+    label: v.help || v.id,
+    pages: v.pages.length,
+    instances: v.totalInstances
+  }));
+  
+  const impactData = {};
+  sortedViolations.forEach(v => {
+    const impact = v.impact || 'unknown';
+    impactData[impact] = (impactData[impact] || 0) + v.totalInstances;
+  });
+  
+  const pageViolationCounts = {};
+  sortedViolations.forEach(rule => {
+    rule.pages.forEach(page => {
+      if (!pageViolationCounts[page.url]) {
+        pageViolationCounts[page.url] = { url: page.url, count: 0 };
+      }
+      pageViolationCounts[page.url].count += page.instances;
+    });
+  });
+  const topPages = Object.values(pageViolationCounts)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+  
+  const siteWideCount = sortedViolations.filter(v => v.pages.length > totalPages * 0.5).length;
+  const pageSpecificCount = sortedViolations.length - siteWideCount;
+  
+  // Add JavaScript for charts
+  html += `
+    <script>
+        // Top Violations Chart
+        const violationsCtx = document.getElementById('violationsChart').getContext('2d');
+        new Chart(violationsCtx, {
+            type: 'bar',
+            data: {
+                labels: ${JSON.stringify(topViolations.map(v => v.label.length > 30 ? v.label.substring(0, 30) + '...' : v.label))},
+                datasets: [{
+                    label: 'Affected Pages',
+                    data: ${JSON.stringify(topViolations.map(v => v.pages))},
+                    backgroundColor: 'rgba(231, 76, 60, 0.8)',
+                    borderColor: 'rgba(231, 76, 60, 1)',
+                    borderWidth: 1
+                }, {
+                    label: 'Total Instances',
+                    data: ${JSON.stringify(topViolations.map(v => v.instances))},
+                    backgroundColor: 'rgba(243, 156, 18, 0.8)',
+                    borderColor: 'rgba(243, 156, 18, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return context.dataset.label + ': ' + context.parsed.y;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+        
+        // Impact Level Distribution Chart
+        const impactCtx = document.getElementById('impactChart').getContext('2d');
+        const impactLabels = ${JSON.stringify(Object.keys(impactData))};
+        const impactColors = {
+            'critical': 'rgba(142, 68, 173, 0.8)',
+            'serious': 'rgba(231, 76, 60, 0.8)',
+            'moderate': 'rgba(243, 156, 18, 0.8)',
+            'minor': 'rgba(52, 152, 219, 0.8)',
+            'unknown': 'rgba(149, 165, 166, 0.8)'
+        };
+        new Chart(impactCtx, {
+            type: 'doughnut',
+            data: {
+                labels: impactLabels,
+                datasets: [{
+                    data: ${JSON.stringify(Object.values(impactData))},
+                    backgroundColor: impactLabels.map(label => impactColors[label] || impactColors['unknown']),
+                    borderWidth: 2,
+                    borderColor: '#fff'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                const percentage = ((context.parsed / total) * 100).toFixed(1);
+                                return context.label + ': ' + context.parsed + ' (' + percentage + '%)';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        
+        // Pages with Most Violations Chart
+        const pagesCtx = document.getElementById('pagesChart').getContext('2d');
+        new Chart(pagesCtx, {
+            type: 'bar',
+            data: {
+                labels: ${JSON.stringify(topPages.map(p => {
+                  const url = p.url.length > 40 ? p.url.substring(0, 40) + '...' : p.url;
+                  return url;
+                }))},
+                datasets: [{
+                    label: 'Violation Instances',
+                    data: ${JSON.stringify(topPages.map(p => p.count))},
+                    backgroundColor: 'rgba(52, 152, 219, 0.8)',
+                    borderColor: 'rgba(52, 152, 219, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                indexAxis: 'y',
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return 'Violations: ' + context.parsed.x;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+        
+        // Site-Wide vs Page-Specific Chart
+        const scopeCtx = document.getElementById('scopeChart').getContext('2d');
+        new Chart(scopeCtx, {
+            type: 'pie',
+            data: {
+                labels: ['Site-Wide Issues', 'Page-Specific Issues'],
+                datasets: [{
+                    data: [${siteWideCount}, ${pageSpecificCount}],
+                    backgroundColor: [
+                        'rgba(243, 156, 18, 0.8)',
+                        'rgba(52, 152, 219, 0.8)'
+                    ],
+                    borderWidth: 2,
+                    borderColor: '#fff'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const total = ${siteWideCount + pageSpecificCount};
+                                const percentage = ((context.parsed / total) * 100).toFixed(1);
+                                return context.label + ': ' + context.parsed + ' (' + percentage + '%)';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    </script>`;
+  
+  // Site-wide issues section
+  if (siteWideViolations.length > 0) {
+    html += `
+        <h2>🚨 Site-Wide Issues (Affecting >50% of Pages)</h2>
+        <p style="margin-bottom: 20px; color: #e74c3c; font-weight: bold;">These issues affect most pages and should be fixed first for maximum impact.</p>`;
+    
+    siteWideViolations.forEach(rule => {
+      const impactClass = rule.impact ? `impact-${rule.impact}` : 'impact-moderate';
+      const percentage = Math.round((rule.pages.length / totalPages) * 100);
+      html += `
+        <div class="violation-group site-wide">
+            <div class="violation-header">
+                <div>
+                    <span class="violation-title">${rule.help || rule.id}</span>
+                    <span class="impact-badge ${impactClass}">${rule.impact || 'unknown'}</span>
+                    <span class="site-wide-badge">${percentage}% of pages</span>
+                </div>
+                <div class="violation-meta">
+                    ${rule.totalInstances} total instances across ${rule.pages.length} pages
+                </div>
+            </div>
+            <p style="margin: 10px 0; color: #555;">${rule.description}</p>
+            ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
+            <div class="tags">
+                ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
+            </div>
+            <div class="pages-list">
+                <strong>Affected Pages (${rule.pages.length}):</strong>
+                ${rule.pages.map(page => `
+                    <div class="page-item">
+                        <a href="${page.url}" target="_blank" class="page-url">${page.url}</a>
+                        <span class="instances-count">${page.instances} instance${page.instances !== 1 ? 's' : ''}</span>
+                    </div>
+                `).join('')}
+            </div>
+        </div>`;
+    });
+  }
+  
+  // All violations section
+  if (sortedViolations.length > 0) {
+    html += `
+        <h2>⚠️ All Violations (Grouped by Issue Type)</h2>
+        <p style="margin-bottom: 20px;">Pages are grouped by the same accessibility issues. Fixing a common issue once can help multiple pages.</p>`;
+    
+    sortedViolations.forEach(rule => {
+      const isSiteWide = rule.pages.length > totalPages * 0.5;
+      const impactClass = rule.impact ? `impact-${rule.impact}` : 'impact-moderate';
+      html += `
+        <div class="violation-group ${isSiteWide ? 'site-wide' : ''}">
+            <div class="violation-header">
+                <div>
+                    <span class="violation-title">${rule.help || rule.id}</span>
+                    <span class="impact-badge ${impactClass}">${rule.impact || 'unknown'}</span>
+                    ${isSiteWide ? '<span class="site-wide-badge">Site-Wide</span>' : ''}
+                </div>
+                <div class="violation-meta">
+                    ${rule.totalInstances} instances on ${rule.pages.length} page${rule.pages.length !== 1 ? 's' : ''}
+                </div>
+            </div>
+            <p style="margin: 10px 0; color: #555;">${rule.description}</p>
+            ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
+            <div class="tags">
+                ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
+            </div>
+            <div class="pages-list">
+                <strong>Pages with this issue (${rule.pages.length}):</strong>
+                ${rule.pages.map(page => `
+                    <div class="page-item">
+                        <a href="${page.url}" target="_blank" class="page-url">${page.url}</a>
+                        <span class="instances-count">${page.instances} instance${page.instances !== 1 ? 's' : ''}</span>
+                    </div>
+                `).join('')}
+            </div>
+        </div>`;
+    });
+  } else {
+    html += `
+        <div class="no-issues">
+            ✅ No violations found across all pages!
+        </div>`;
+  }
+  
+  // Incomplete checks section
+  if (sortedIncomplete.length > 0) {
+    html += `
+        <h2>🔍 Issues Needing Manual Review</h2>
+        <p style="margin-bottom: 20px;">These issues require manual verification to determine if they are actual problems.</p>`;
+    
+    sortedIncomplete.forEach(rule => {
+      const isSiteWide = rule.pages.length > totalPages * 0.5;
+      html += `
+        <div class="violation-group ${isSiteWide ? 'site-wide' : ''}">
+            <div class="violation-header">
+                <div>
+                    <span class="violation-title">${rule.help || rule.id}</span>
+                    ${isSiteWide ? '<span class="site-wide-badge">Site-Wide</span>' : ''}
+                </div>
+                <div class="violation-meta">
+                    ${rule.totalInstances} instances on ${rule.pages.length} page${rule.pages.length !== 1 ? 's' : ''}
+                </div>
+            </div>
+            <p style="margin: 10px 0; color: #555;">${rule.description}</p>
+            ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
+            <div class="pages-list">
+                <strong>Pages needing review (${rule.pages.length}):</strong>
+                ${rule.pages.map(page => `
+                    <div class="page-item">
+                        <a href="${page.url}" target="_blank" class="page-url">${page.url}</a>
+                        <span class="instances-count">${page.instances} instance${page.instances !== 1 ? 's' : ''}</span>
+                    </div>
+                `).join('')}
+            </div>
+        </div>`;
+    });
+  }
+  
+  html += `
+    </div>
+</body>
+</html>`;
+  
+  return html;
 }
 
 /**

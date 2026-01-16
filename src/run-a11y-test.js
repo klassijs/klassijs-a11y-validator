@@ -278,7 +278,7 @@ async function runAccessibilityTest() {
       ],
       count: true,         // Include total error count
       crawlOnly: crawlOnly, // Set to true to only crawl without testing
-      maxPagesToTest: null, // Limit how many pages to test (null = test all discovered pages)
+      maxPagesToTest: null, // Limit how many pages to test (5 for testing new features, set to null to test all discovered pages)
       // auth: authConfig,  // Uncomment to enable authentication
       // skipPrivatePages: false,  // Set to true to skip pages that require login
       // privatePageIndicators: ['Login', 'Sign in'],  // Custom indicators for private pages
