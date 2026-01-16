@@ -610,13 +610,17 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
         }
         
         const instanceCount = violation.nodes?.length || 0;
-        violationsByRule[ruleId].pages.push({
-          url: pageReport.url,
-          pageName: pageReport.pageName,
-          instances: instanceCount,
-          nodes: violation.nodes || [],
-        });
-        violationsByRule[ruleId].totalInstances += instanceCount;
+        // Ensure we have a valid URL or pageName
+        const pageUrl = pageReport.url || pageReport.pageName || '';
+        if (pageUrl) {
+          violationsByRule[ruleId].pages.push({
+            url: pageUrl,
+            pageName: pageReport.pageName || pageUrl,
+            instances: instanceCount,
+            nodes: violation.nodes || [],
+          });
+          violationsByRule[ruleId].totalInstances += instanceCount;
+        }
       });
       
       // Process incomplete checks
@@ -636,9 +640,12 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
         }
         
         const instanceCount = incomplete.nodes?.length || 0;
+        // Always add the page - use pageName as fallback if URL is missing
+        const pageUrl = pageReport.url || pageReport.pageName || 'Unknown page';
+        const pageName = pageReport.pageName || pageUrl || 'Unknown page';
         incompleteByRule[ruleId].pages.push({
-          url: pageReport.url,
-          pageName: pageReport.pageName,
+          url: pageUrl,
+          pageName: pageName,
           instances: instanceCount,
           nodes: incomplete.nodes || [],
         });
@@ -755,9 +762,12 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
         .impact-moderate { background: #f39c12; color: white; }
         .impact-minor { background: #3498db; color: white; }
         .impact-critical { background: #8e44ad; color: white; }
-        .pages-list { margin-top: 15px; }
+        .pages-list { margin-top: 15px; max-height: none; overflow: visible; }
         .page-item { padding: 10px; margin: 5px 0; background: #f8f9fa; border-left: 3px solid #3498db; border-radius: 4px; }
         .page-item:hover { background: #e9ecef; }
+        .violation-content { display: block; overflow: visible; transition: max-height 0.4s ease-out, opacity 0.3s ease-out; max-height: 5000px; opacity: 1; }
+        .violation-content.collapsed { max-height: 0 !important; opacity: 0; overflow: hidden; padding: 0 !important; margin: 0 !important; }
+        .violation-content:not(.collapsed) { max-height: none !important; overflow: visible !important; }
         .page-url { color: #3498db; text-decoration: none; font-weight: 500; }
         .page-url:hover { text-decoration: underline; }
         .instances-count { display: inline-block; background: #e74c3c; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.85em; margin-left: 10px; }
@@ -768,6 +778,19 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
         .summary-section { margin: 30px 0; padding: 20px; background: #f8f9fa; border-radius: 6px; }
         .no-issues { text-align: center; padding: 40px; color: #27ae60; font-size: 1.2em; }
         .site-wide-badge { display: inline-block; background: #f39c12; color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.8em; margin-left: 10px; font-weight: bold; }
+        .collapsible-header { cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; }
+        .collapsible-header:hover { background: #e8f4f8; }
+        .collapse-icon { display: inline-block; margin-right: 10px; transition: transform 0.3s; font-size: 1.2em; }
+        .collapse-icon.collapsed { transform: rotate(-90deg); }
+        .collapsible-content { display: block; overflow: visible; transition: max-height 0.4s ease-out, opacity 0.3s ease-out; max-height: 50000px; opacity: 1; }
+        .collapsible-content.collapsed { max-height: 0 !important; opacity: 0; overflow: hidden; padding: 0 !important; margin: 0 !important; }
+        .collapsible-content:not(.collapsed) { max-height: none !important; overflow: visible !important; }
+        .section-controls { margin: 10px 0; text-align: right; }
+        .section-controls button { background: #3498db; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-left: 10px; font-size: 0.9em; }
+        .section-controls button:hover { background: #2980b9; }
+        .violation-toggle { cursor: pointer; }
+        .violation-content { display: block; overflow: hidden; transition: max-height 0.4s ease-out, opacity 0.3s ease-out; max-height: 5000px; opacity: 1; }
+        .violation-content.collapsed { max-height: 0 !important; opacity: 0; overflow: hidden; padding: 0 !important; margin: 0 !important; }
     </style>
 </head>
 <body>
@@ -1026,21 +1049,162 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                 }
             }
         });
+    </script>
+    <script>
+        // Define collapse/expand functions in head so they're available immediately
+        window.toggleSection = function(sectionId) {
+            console.log('toggleSection called with:', sectionId);
+            const section = document.getElementById(sectionId);
+            const icon = document.getElementById(sectionId + 'Icon');
+            if (section) {
+                const isCollapsed = section.classList.contains('collapsed');
+                if (isCollapsed) {
+                    // Remove collapsed class temporarily to measure actual height
+                    section.classList.remove('collapsed');
+                    section.style.maxHeight = 'none';
+                    const height = section.scrollHeight;
+                    section.style.maxHeight = height + 'px';
+                    if (icon) {
+                        icon.classList.remove('collapsed');
+                    }
+                    // After transition, set to none to allow all content to be visible
+                    setTimeout(function() {
+                        section.style.maxHeight = 'none';
+                    }, 400);
+                } else {
+                    // Get current height before collapsing
+                    const currentHeight = section.scrollHeight;
+                    section.style.maxHeight = currentHeight + 'px';
+                    // Force reflow
+                    section.offsetHeight;
+                    section.classList.add('collapsed');
+                    section.style.maxHeight = '0';
+                    if (icon) {
+                        icon.classList.add('collapsed');
+                    }
+                }
+            } else {
+                console.error('Section not found:', sectionId);
+            }
+        };
+        
+        window.toggleViolation = function(violationId) {
+            console.log('toggleViolation called with:', violationId);
+            const violation = document.getElementById(violationId);
+            const icon = document.getElementById(violationId + 'Icon');
+            if (violation) {
+                const isCollapsed = violation.classList.contains('collapsed');
+                if (isCollapsed) {
+                    // Remove collapsed class temporarily to measure actual height
+                    violation.classList.remove('collapsed');
+                    violation.style.maxHeight = 'none';
+                    const height = violation.scrollHeight;
+                    violation.style.maxHeight = height + 'px';
+                    if (icon) {
+                        icon.classList.remove('collapsed');
+                    }
+                    // After transition, set to auto or large value to allow content to grow
+                    setTimeout(function() {
+                        violation.style.maxHeight = 'none';
+                    }, 400);
+                } else {
+                    // Get current height before collapsing
+                    const currentHeight = violation.scrollHeight;
+                    violation.style.maxHeight = currentHeight + 'px';
+                    // Force reflow
+                    violation.offsetHeight;
+                    violation.classList.add('collapsed');
+                    violation.style.maxHeight = '0';
+                    if (icon) {
+                        icon.classList.add('collapsed');
+                    }
+                }
+            } else {
+                console.error('Violation not found:', violationId);
+            }
+        };
+        
+        window.toggleAll = function(sectionId, expand) {
+            console.log('toggleAll called with:', sectionId, expand);
+            const section = document.getElementById(sectionId);
+            if (!section) {
+                console.error('Section not found:', sectionId);
+                return;
+            }
+            
+            // If expanding, first make sure the section itself is expanded
+            if (expand && section.classList.contains('collapsed')) {
+                const sectionIcon = document.getElementById(sectionId + 'Icon');
+                section.classList.remove('collapsed');
+                section.style.maxHeight = section.scrollHeight + 'px';
+                if (sectionIcon) {
+                    sectionIcon.classList.remove('collapsed');
+                }
+                // Small delay to ensure section is expanded before querying violations
+                setTimeout(function() {
+                    toggleViolationsInSection(sectionId, expand);
+                }, 50);
+            } else {
+                toggleViolationsInSection(sectionId, expand);
+            }
+        };
+        
+        function toggleViolationsInSection(sectionId, expand) {
+            const section = document.getElementById(sectionId);
+            if (!section) return;
+            
+            const violations = section.querySelectorAll('.violation-content');
+            console.log('Found violations:', violations.length);
+            violations.forEach((v) => {
+                const id = v.id;
+                const icon = document.getElementById(id + 'Icon');
+                if (expand) {
+                    // Remove collapsed class and measure actual height
+                    v.classList.remove('collapsed');
+                    v.style.maxHeight = 'none';
+                    const height = v.scrollHeight;
+                    v.style.maxHeight = height + 'px';
+                    if (icon) icon.classList.remove('collapsed');
+                    // After transition, set to none to allow all content to be visible
+                    setTimeout(function() {
+                        v.style.maxHeight = 'none';
+                    }, 400);
+                } else {
+                    // Get current height before collapsing
+                    const currentHeight = v.scrollHeight;
+                    v.style.maxHeight = currentHeight + 'px';
+                    // Force reflow
+                    v.offsetHeight;
+                    v.classList.add('collapsed');
+                    v.style.maxHeight = '0';
+                    if (icon) icon.classList.add('collapsed');
+                }
+            });
+        }
     </script>`;
   
   // Site-wide issues section
   if (siteWideViolations.length > 0) {
     html += `
-        <h2>🚨 Site-Wide Issues (Affecting >50% of Pages)</h2>
-        <p style="margin-bottom: 20px; color: #e74c3c; font-weight: bold;">These issues affect most pages and should be fixed first for maximum impact.</p>`;
+        <div class="section-controls">
+            <button onclick="window.toggleAll('siteWideSection', true)">Expand All</button>
+            <button onclick="window.toggleAll('siteWideSection', false)">Collapse All</button>
+        </div>
+        <h2 class="collapsible-header" onclick="window.toggleSection('siteWideSection')" style="cursor: pointer;">
+            <span><span class="collapse-icon collapsed" id="siteWideIcon">▼</span>🚨 Site-Wide Issues (Affecting >50% of Pages)</span>
+            <span style="font-size: 0.7em; color: #7f8c8d;">(${siteWideViolations.length} issues)</span>
+        </h2>
+        <div id="siteWideSection" class="collapsible-content collapsed" style="padding: 20px 0;">
+            <p style="margin-bottom: 20px; color: #e74c3c; font-weight: bold;">These issues affect most pages and should be fixed first for maximum impact.</p>`;
     
-    siteWideViolations.forEach(rule => {
+    siteWideViolations.forEach((rule, index) => {
       const impactClass = rule.impact ? `impact-${rule.impact}` : 'impact-moderate';
       const percentage = Math.round((rule.pages.length / totalPages) * 100);
       html += `
         <div class="violation-group site-wide">
-            <div class="violation-header">
+            <div class="violation-header violation-toggle" onclick="window.toggleViolation('siteWideViolation${index}')" style="cursor: pointer;">
                 <div>
+                    <span class="collapse-icon" id="siteWideViolation${index}Icon">▼</span>
                     <span class="violation-title">${rule.help || rule.id}</span>
                     <span class="impact-badge ${impactClass}">${rule.impact || 'unknown'}</span>
                     <span class="site-wide-badge">${percentage}% of pages</span>
@@ -1049,37 +1213,52 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                     ${rule.totalInstances} total instances across ${rule.pages.length} pages
                 </div>
             </div>
-            <p style="margin: 10px 0; color: #555;">${rule.description}</p>
-            ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
-            <div class="tags">
-                ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
-            </div>
-            <div class="pages-list">
-                <strong>Affected Pages (${rule.pages.length}):</strong>
-                ${rule.pages.map(page => `
-                    <div class="page-item">
-                        <a href="${page.url}" target="_blank" class="page-url">${page.url}</a>
-                        <span class="instances-count">${page.instances} instance${page.instances !== 1 ? 's' : ''}</span>
-                    </div>
-                `).join('')}
+            <div id="siteWideViolation${index}" class="violation-content collapsed">
+                <p style="margin: 10px 0; color: #555;">${rule.description}</p>
+                ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
+                <div class="tags">
+                    ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
+                </div>
+                <div class="pages-list">
+                    <strong>Affected Pages (${rule.pages.length}):</strong>
+                    ${rule.pages && rule.pages.length > 0 ? rule.pages.map(page => {
+                        const pageUrl = page.url || page.pageName || 'Unknown page';
+                        const displayUrl = pageUrl || 'Unknown page';
+                        return `
+                        <div class="page-item">
+                            <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
+                            <span class="instances-count">${page.instances || 0} instance${(page.instances || 0) !== 1 ? 's' : ''}</span>
+                        </div>`;
+                    }).join('') : '<p style="color: #999; font-style: italic;">No pages available</p>'}
+                </div>
             </div>
         </div>`;
     });
+    html += `</div>`;
   }
   
   // All violations section
   if (sortedViolations.length > 0) {
     html += `
-        <h2>⚠️ All Violations (Grouped by Issue Type)</h2>
-        <p style="margin-bottom: 20px;">Pages are grouped by the same accessibility issues. Fixing a common issue once can help multiple pages.</p>`;
+        <div class="section-controls">
+            <button onclick="window.toggleAll('allViolationsSection', true)">Expand All</button>
+            <button onclick="window.toggleAll('allViolationsSection', false)">Collapse All</button>
+        </div>
+        <h2 class="collapsible-header" onclick="window.toggleSection('allViolationsSection')" style="cursor: pointer;">
+            <span><span class="collapse-icon collapsed" id="allViolationsIcon">▼</span>⚠️ All Violations (Grouped by Issue Type)</span>
+            <span style="font-size: 0.7em; color: #7f8c8d;">(${sortedViolations.length} issues)</span>
+        </h2>
+        <div id="allViolationsSection" class="collapsible-content collapsed" style="padding: 20px 0;">
+            <p style="margin-bottom: 20px;">Pages are grouped by the same accessibility issues. Fixing a common issue once can help multiple pages.</p>`;
     
-    sortedViolations.forEach(rule => {
+    sortedViolations.forEach((rule, index) => {
       const isSiteWide = rule.pages.length > totalPages * 0.5;
       const impactClass = rule.impact ? `impact-${rule.impact}` : 'impact-moderate';
       html += `
         <div class="violation-group ${isSiteWide ? 'site-wide' : ''}">
-            <div class="violation-header">
+            <div class="violation-header violation-toggle" onclick="window.toggleViolation('allViolation${index}')" style="cursor: pointer;">
                 <div>
+                    <span class="collapse-icon collapsed" id="allViolation${index}Icon">▼</span>
                     <span class="violation-title">${rule.help || rule.id}</span>
                     <span class="impact-badge ${impactClass}">${rule.impact || 'unknown'}</span>
                     ${isSiteWide ? '<span class="site-wide-badge">Site-Wide</span>' : ''}
@@ -1088,22 +1267,28 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                     ${rule.totalInstances} instances on ${rule.pages.length} page${rule.pages.length !== 1 ? 's' : ''}
                 </div>
             </div>
-            <p style="margin: 10px 0; color: #555;">${rule.description}</p>
-            ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
-            <div class="tags">
-                ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
-            </div>
-            <div class="pages-list">
-                <strong>Pages with this issue (${rule.pages.length}):</strong>
-                ${rule.pages.map(page => `
-                    <div class="page-item">
-                        <a href="${page.url}" target="_blank" class="page-url">${page.url}</a>
-                        <span class="instances-count">${page.instances} instance${page.instances !== 1 ? 's' : ''}</span>
-                    </div>
-                `).join('')}
+            <div id="allViolation${index}" class="violation-content collapsed">
+                <p style="margin: 10px 0; color: #555;">${rule.description}</p>
+                ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
+                <div class="tags">
+                    ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
+                </div>
+                <div class="pages-list">
+                    <strong>Pages with this issue (${rule.pages.length}):</strong>
+                    ${rule.pages && rule.pages.length > 0 ? rule.pages.map(page => {
+                        const pageUrl = page.url || page.pageName || 'Unknown page';
+                        const displayUrl = pageUrl || 'Unknown page';
+                        return `
+                        <div class="page-item">
+                            <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
+                            <span class="instances-count">${page.instances || 0} instance${(page.instances || 0) !== 1 ? 's' : ''}</span>
+                        </div>`;
+                    }).join('') : '<p style="color: #999; font-style: italic;">No pages available</p>'}
+                </div>
             </div>
         </div>`;
     });
+    html += `</div>`;
   } else {
     html += `
         <div class="no-issues">
@@ -1114,15 +1299,24 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
   // Incomplete checks section
   if (sortedIncomplete.length > 0) {
     html += `
-        <h2>🔍 Issues Needing Manual Review</h2>
-        <p style="margin-bottom: 20px;">These issues require manual verification to determine if they are actual problems.</p>`;
+        <div class="section-controls">
+            <button onclick="window.toggleAll('incompleteSection', true)">Expand All</button>
+            <button onclick="window.toggleAll('incompleteSection', false)">Collapse All</button>
+        </div>
+        <h2 class="collapsible-header" onclick="window.toggleSection('incompleteSection')" style="cursor: pointer;">
+            <span><span class="collapse-icon collapsed" id="incompleteIcon">▼</span>🔍 Issues Needing Manual Review</span>
+            <span style="font-size: 0.7em; color: #7f8c8d;">(${sortedIncomplete.length} issues)</span>
+        </h2>
+        <div id="incompleteSection" class="collapsible-content collapsed" style="padding: 20px 0;">
+            <p style="margin-bottom: 20px;">These issues require manual verification to determine if they are actual problems.</p>`;
     
-    sortedIncomplete.forEach(rule => {
+    sortedIncomplete.forEach((rule, index) => {
       const isSiteWide = rule.pages.length > totalPages * 0.5;
       html += `
         <div class="violation-group ${isSiteWide ? 'site-wide' : ''}">
-            <div class="violation-header">
+            <div class="violation-header violation-toggle" onclick="window.toggleViolation('incompleteViolation${index}')" style="cursor: pointer;">
                 <div>
+                    <span class="collapse-icon collapsed" id="incompleteViolation${index}Icon">▼</span>
                     <span class="violation-title">${rule.help || rule.id}</span>
                     ${isSiteWide ? '<span class="site-wide-badge">Site-Wide</span>' : ''}
                 </div>
@@ -1130,19 +1324,29 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                     ${rule.totalInstances} instances on ${rule.pages.length} page${rule.pages.length !== 1 ? 's' : ''}
                 </div>
             </div>
-            <p style="margin: 10px 0; color: #555;">${rule.description}</p>
-            ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
-            <div class="pages-list">
-                <strong>Pages needing review (${rule.pages.length}):</strong>
-                ${rule.pages.map(page => `
-                    <div class="page-item">
-                        <a href="${page.url}" target="_blank" class="page-url">${page.url}</a>
-                        <span class="instances-count">${page.instances} instance${page.instances !== 1 ? 's' : ''}</span>
-                    </div>
-                `).join('')}
+            <div id="incompleteViolation${index}" class="violation-content collapsed">
+                <p style="margin: 10px 0; color: #555;">${rule.description}</p>
+                ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
+                ${rule.tags && rule.tags.length > 0 ? `
+                <div class="tags">
+                    ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
+                </div>` : ''}
+                <div class="pages-list">
+                    <strong>Pages needing review (${rule.pages ? rule.pages.length : 0}):</strong>
+                    ${rule.pages && rule.pages.length > 0 ? rule.pages.map(page => {
+                        const pageUrl = page.url || page.pageName || 'Unknown page';
+                        const displayUrl = pageUrl || 'Unknown page';
+                        return `
+                        <div class="page-item">
+                            <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
+                            <span class="instances-count">${page.instances || 0} instance${(page.instances || 0) !== 1 ? 's' : ''}</span>
+                        </div>`;
+                    }).join('') : '<p style="color: #999; font-style: italic; padding: 10px;">No pages available</p>'}
+                </div>
             </div>
         </div>`;
     });
+    html += `</div>`;
   }
   
   html += `
