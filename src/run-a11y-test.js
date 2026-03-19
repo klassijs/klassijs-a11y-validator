@@ -43,6 +43,8 @@ const { astellen } = require('klassijs-astellen');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const { authenticate } = require('./urlCrawler');
+const { buildAuthConfig } = require('./auth');
 
 // Configuration for the browser
 // Option 1: Use Chrome (requires chromedriver)
@@ -190,6 +192,9 @@ const getCliValue = (args, flag) => {
 const fetchText = async (url) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20000);
+  // Avoid keeping the Node event loop alive just because the timeout exists.
+  // Jest (and some CI runners) can report "worker failed to exit gracefully" if timers aren't unref'd.
+  if (typeof timeout.unref === 'function') timeout.unref();
   try {
     const response = await fetch(url, {
       signal: controller.signal,
@@ -521,6 +526,10 @@ const parseCliOptions = async () => {
   const fromSitemap = args.includes('--from-sitemap');
   const crawlOnly = process.env.CRAWL_ONLY === 'true' || args.includes('--crawl-only');
 
+  const loginUrlArg = getCliValue(args, '--login-url');
+  const usernameArg = getCliValue(args, '--username');
+  const passwordArg = getCliValue(args, '--password');
+
   // First non-flag argument that looks like a URL is treated as positional base URL.
   // This prevents file paths like "./pages.csv" from being misinterpreted as a base URL.
   const positionalUrl = args.find(
@@ -529,6 +538,12 @@ const parseCliOptions = async () => {
       (String(arg).startsWith('http://') || String(arg).startsWith('https://'))
   );
   const baseUrl = baseUrlArg || positionalUrl || null;
+
+  const authConfig = buildAuthConfig({
+    loginUrl: loginUrlArg || process.env.LOGIN_URL || null,
+    username: usernameArg || process.env.A11Y_USERNAME || null,
+    password: passwordArg || process.env.A11Y_PASSWORD || null,
+  });
 
   let pages = [];
   if (pagesArg) {
@@ -577,6 +592,7 @@ const parseCliOptions = async () => {
     pages,
     crawlOnly,
     fromSitemap,
+    authConfig,
     mode: pages.length > 0 ? 'pages' : 'crawl',
   };
 };
@@ -584,6 +600,7 @@ const parseCliOptions = async () => {
 async function runAccessibilityTest() {
   const options = await parseCliOptions();
   const testUrl = options.baseUrl;
+  const authConfig = options.authConfig;
 
   if (options.mode === 'crawl' && !testUrl) {
     console.error('❌ Missing URL.');
@@ -737,6 +754,10 @@ async function runAccessibilityTest() {
 
     if (options.mode === 'pages') {
       console.log('Running explicit page tests (crawl disabled)...');
+      if (authConfig) {
+        console.log('Authenticating before explicit page tests...');
+        await authenticate(authConfig);
+      }
       const pageRun = await runPagesModeTests(options.pages, 'explicit pages mode');
       results = pageRun.results;
       executionErrors = pageRun.executionErrors;
@@ -770,6 +791,10 @@ async function runAccessibilityTest() {
             message: 'Crawl completed from sitemap discovery. Accessibility testing was skipped (crawlOnly mode).',
           };
         } else {
+            if (authConfig) {
+              console.log('Authenticating before sitemap-based page tests...');
+              await authenticate(authConfig);
+            }
           const pageRun = await runPagesModeTests(sitemapPages, 'sitemap discovery');
           results = pageRun.results;
           executionErrors = pageRun.executionErrors;
@@ -788,9 +813,9 @@ async function runAccessibilityTest() {
           count: true,         // Include total error count
           crawlOnly: crawlOnly, // Set to true to only crawl without testing
           maxPagesToTest: null, // Limit how many pages to test (5 for testing new features, set to null to test all discovered pages)
-          // auth: authConfig,  // Uncomment to enable authentication
-          // skipPrivatePages: false,  // Set to true to skip pages that require login
-          // privatePageIndicators: ['Login', 'Sign in'],  // Custom indicators for private pages
+            auth: authConfig,
+            skipPrivatePages: false,
+            privatePageIndicators: ['Login', 'Sign in', 'Authentication required'],
         });
 
         // Keep transient WebDriver/Bidi execution errors out of the accessibility issue report.
@@ -897,4 +922,22 @@ if (require.main === module) {
     });
 }
 
-module.exports = { runAccessibilityTest };
+module.exports = {
+  runAccessibilityTest,
+  // Expose internals for unit testing (no runtime behavior changes).
+  _test: {
+    cleanUrlInput,
+    describeHiddenChars,
+    normalizeUrl,
+    parseSimpleCsvRows,
+    parseCsvIgnoreColumns,
+    looksLikeUrlOrPath,
+    getPagesFromFile,
+    parseCliOptions,
+    fetchText,
+    extractSitemapUrlsFromRobotsTxt,
+    extractLocUrlsFromXml,
+    isSameHostname,
+    discoverPagesFromSitemap,
+  },
+};

@@ -19,15 +19,13 @@
   ],
   "main": "index.js",
   "scripts": {
-    "test": "jest",
+    "test": "jest --runInBand",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
+    "test:coverage": "jest --coverage --runInBand",
     "a11y:crawl": "node src/run-a11y-test.js",
     "a11y:crawl-only": "node src/run-a11y-test.js --crawl-only",
     "a11y:pages": "node src/run-a11y-test.js --pages",
-    "a11y:pages-file": "node src/run-a11y-test.js --pages-file",
-    "a11y:base-pages": "node src/run-a11y-test.js --base-url",
-    "a11y:sitemap": "node src/run-a11y-test.js --from-sitemap"
+    "a11y:pages-file": "node src/run-a11y-test.js --pages-file"
   },
   "repository": {
     "type": "git",

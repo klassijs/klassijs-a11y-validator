@@ -8,6 +8,7 @@
 const { remote } = require('webdriverio');
 const { a11yValidatorFromUrl } = require('../index');
 const { astellen } = require('klassijs-astellen');
+const { buildAuthConfig } = require('./auth');
 
 const browserOptions = {
   capabilities: {
@@ -69,32 +70,11 @@ async function runAccessibilityTestWithAuth() {
     }
 
     // Configure authentication
-    const authConfig = loginUrl ? {
-      loginUrl: loginUrl,
-      credentials: {
-        username: username,
-        password: password,
-      },
-      // Customize selectors based on your login form
-      selectors: {
-        username: 'input[name="username"], input[name="email"], input[type="email"], #username, #email',
-        password: 'input[name="password"], input[type="password"], #password',
-        submit: 'button[type="submit"], input[type="submit"], button:contains("Login"), button:contains("Sign in")',
-      },
-      // Alternative: Use a custom login function for complex authentication
-      // loginFunction: async (browser) => {
-      //   await browser.url(loginUrl);
-      //   await browser.waitForExist('input[name="username"]');
-      //   await browser.$('input[name="username"]').setValue(username);
-      //   await browser.$('input[name="password"]').setValue(password);
-      //   await browser.$('button[type="submit"]').click();
-      //   // Wait for successful login (adjust selector as needed)
-      //   await browser.waitUntil(async () => {
-      //     const url = await browser.getUrl();
-      //     return !url.includes('login');
-      //   }, { timeout: 10000 });
-      // },
-    } : null;
+    const authConfig = buildAuthConfig({
+      loginUrl,
+      username,
+      password,
+    });
 
     if (!authConfig && (username || password)) {
       console.warn('⚠️  Warning: Login credentials provided but no login URL. Authentication will be skipped.\n');

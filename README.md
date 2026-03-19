@@ -60,6 +60,12 @@ node src/run-a11y-test.js https://example.com --crawl-only
 # 3) Test specific pages only (no crawling)
 node src/run-a11y-test.js https://example.com --pages /,/about,/contact
 
+# Auth (optional): use login + credentials for private pages
+node src/run-a11y-test.js https://example.com \
+  --login-url https://example.com/login \
+  --username test-user \
+  --password test-pass
+
 # 4) Test pages from file (`.txt` or `.csv`)
 node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.txt
 node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv
@@ -86,17 +92,20 @@ pnpm a11y:crawl-only https://example.com
 
 # Specific page(s)
 pnpm a11y:pages https://example.com/about
-pnpm a11y:base-pages https://example.com --pages /,/about,/contact
+node src/run-a11y-test.js --base-url https://example.com --pages /,/about,/contact
 
 # Pages from file
 pnpm a11y:pages-file ./pages.txt
-pnpm a11y:base-pages https://example.com --pages-file ./pages.txt
-pnpm a11y:base-pages https://example.com --pages-file ./pages.csv
-pnpm a11y:base-pages https://example.com --pages-file ./pages.csv --csv-ignore-columns notes,status
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.txt
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns notes,status
 
 # From sitemap
-pnpm a11y:sitemap https://example.com
-pnpm a11y:sitemap --base-url https://example.com --sitemap-url https://example.com/sitemap.xml
+node src/run-a11y-test.js --from-sitemap https://example.com
+node src/run-a11y-test.js --from-sitemap --base-url https://example.com --sitemap-url https://example.com/sitemap.xml
+
+# Auth examples (optional)
+pnpm a11y:crawl https://example.com --login-url https://example.com/login --username test-user --password test-pass
 ```
 
 `pages.txt` and `pages.csv` support:
@@ -365,6 +374,30 @@ const { remote } = require('webdriverio');
     await browser.deleteSession();
 })();
 ```
+
+### Authentication (Optional)
+
+`src/run-a11y-test.js` can authenticate before crawling/testing when you pass login info.
+
+CLI flags:
+- `--login-url <url>`
+- `--username <username>`
+- `--password <password>`
+
+Environment variables (also supported):
+- `LOGIN_URL`
+- `A11Y_USERNAME`
+- `A11Y_PASSWORD`
+
+Example:
+```bash
+pnpm a11y:crawl https://example.com \
+  --login-url https://example.com/login \
+  --username test-user \
+  --password test-pass
+```
+
+Note: `src/run-a11y-test-with-auth.js` is still present as a standalone example, but the recommended approach is to use `src/run-a11y-test.js` with the auth flags above.
 
 ## Troubleshooting
 

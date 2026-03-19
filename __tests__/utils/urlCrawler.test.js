@@ -48,7 +48,7 @@ describe('urlCrawler utility', () => {
         'javascript:void(0)',
       ]);
 
-      const links = await discoverPageLinks(baseUrl);
+      const links = await discoverPageLinks(baseUrl, 'example.com');
 
       expect(links).toContain('https://example.com/page2');
       expect(links).toContain('https://example.com/page3');
@@ -62,7 +62,7 @@ describe('urlCrawler utility', () => {
       mockBrowser.getUrl.mockResolvedValue('https://example.com');
       mockBrowser.execute.mockResolvedValue(['/about', '/contact']);
 
-      const links = await discoverPageLinks(baseUrl);
+      const links = await discoverPageLinks(baseUrl, 'example.com');
 
       expect(links).toContain('https://example.com/about');
       expect(links).toContain('https://example.com/contact');
@@ -77,7 +77,7 @@ describe('urlCrawler utility', () => {
         'https://example.com/page?query=1',
       ]);
 
-      const links = await discoverPageLinks(baseUrl);
+      const links = await discoverPageLinks(baseUrl, 'example.com');
 
       expect(links.filter(l => l.includes('/page')).length).toBe(1);
     });
@@ -107,9 +107,9 @@ describe('urlCrawler utility', () => {
         'https://example.com/page2',
       ]);
 
-      const urls = await crawlWebsite(baseUrl, { maxPages: 3, maxDepth: 2 });
+      const result = await crawlWebsite(baseUrl, { maxPages: 3, maxDepth: 2 });
 
-      expect(urls.length).toBeLessThanOrEqual(3);
+      expect(result.urls.length).toBeLessThanOrEqual(3);
       expect(mockBrowser.url).toHaveBeenCalled();
     });
 
@@ -164,9 +164,9 @@ describe('urlCrawler utility', () => {
       mockBrowser.execute.mockResolvedValue([]);
 
       // Should not throw, but continue
-      const urls = await crawlWebsite(baseUrl, { maxPages: 5, maxDepth: 1 });
+      const result = await crawlWebsite(baseUrl, { maxPages: 5, maxDepth: 1 });
 
-      expect(Array.isArray(urls)).toBe(true);
+      expect(Array.isArray(result.urls)).toBe(true);
     });
 
     test('should return empty array if browser is not available', async () => {
