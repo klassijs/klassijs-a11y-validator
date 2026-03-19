@@ -40,10 +40,15 @@ pnpm add -D geckodriver
 
 ## Quick Start - Testing a Real Website
 
-The runner in `src/run-a11y-test.js` now supports three modes:
+The runner in `src/run-a11y-test.js` now supports four modes:
 - Crawl and test an entire site from a start URL
 - Crawl-only (discover pages without accessibility checks)
 - Test specific page(s) only (single URL, comma list, or file list)
+- Discover pages from XML sitemaps and test them
+
+For `crawl` and `crawl-only`, discovery now works as:
+1. Try sitemap discovery first (`robots.txt` sitemap entries, then `/sitemap.xml`)
+2. If no sitemap pages are found, fall back to normal on-page link crawling
 
 ```bash
 # 1) Crawl and test from a start URL
@@ -62,6 +67,10 @@ node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.cs
 # 5) CSV: ignore columns by header name or zero-based index
 node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns notes,status
 node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns 2,3
+
+# 6) Discover pages from sitemap(s) and test them
+node src/run-a11y-test.js --from-sitemap https://example.com
+node src/run-a11y-test.js --from-sitemap --base-url https://example.com --sitemap-url https://example.com/sitemap.xml
 ```
 
 ### NPM Scripts
@@ -84,6 +93,10 @@ pnpm a11y:pages-file ./pages.txt
 pnpm a11y:base-pages https://example.com --pages-file ./pages.txt
 pnpm a11y:base-pages https://example.com --pages-file ./pages.csv
 pnpm a11y:base-pages https://example.com --pages-file ./pages.csv --csv-ignore-columns notes,status
+
+# From sitemap
+pnpm a11y:sitemap https://example.com
+pnpm a11y:sitemap --base-url https://example.com --sitemap-url https://example.com/sitemap.xml
 ```
 
 `pages.txt` and `pages.csv` support:
@@ -133,6 +146,7 @@ This mode:
 - Crawls internal pages from the start URL
 - Runs accessibility checks on discovered pages
 - Generates reports in the reports directory
+- Uses sitemap-first discovery with crawler fallback automatically
 
 #### 2) Crawl-only (discover pages only)
 
@@ -146,6 +160,7 @@ This mode:
 - Crawls and lists discoverable pages
 - Skips accessibility checks
 - Helps verify coverage before full testing
+- Uses sitemap-first discovery with crawler fallback automatically
 
 #### 3) Test only specific pages (no crawling)
 
@@ -164,6 +179,21 @@ node src/run-a11y-test.js --base-url https://yourwebsite.com --pages-file ./page
 ```
 
 Use this mode when you only want to validate selected pages instead of the full site.
+
+#### 4) Test pages discovered from sitemaps
+
+```bash
+# Use robots.txt -> Sitemap directives (fallback to /sitemap.xml)
+node src/run-a11y-test.js --from-sitemap https://yourwebsite.com
+
+# Provide one or more sitemap URLs directly (comma-separated)
+node src/run-a11y-test.js --from-sitemap --base-url https://yourwebsite.com --sitemap-url https://yourwebsite.com/sitemap.xml,https://yourwebsite.com/sitemap-posts.xml
+```
+
+This mode:
+- Discovers URLs from XML sitemap files (including sitemap indexes)
+- Filters to the same domain as `--base-url` (or the positional URL)
+- Tests discovered pages using the same report pipeline as other test modes
 
 ### Single Page Validation
 

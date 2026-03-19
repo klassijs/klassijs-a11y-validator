@@ -29,6 +29,8 @@
  *   node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv
  *   node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns notes,status
  *   node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns 2,3
+ *   node src/run-a11y-test.js --from-sitemap https://example.com
+ *   node src/run-a11y-test.js --from-sitemap --base-url https://example.com --sitemap-url https://example.com/sitemap.xml
  *   
  *   # With different browser
  *   BROWSER=safari node src/run-a11y-test.js https://example.com
@@ -185,6 +187,25 @@ const getCliValue = (args, flag) => {
   return args[index + 1];
 };
 
+const fetchText = async (url) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'user-agent': 'klassijs-a11y-validator/1.0',
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} for ${url}`);
+    }
+    return await response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
 const cleanUrlInput = (input) => {
   if (input === null || input === undefined) return '';
   let value = String(input);
@@ -321,6 +342,110 @@ const looksLikeUrlOrPath = (value) => {
   );
 };
 
+const extractSitemapUrlsFromRobotsTxt = (robotsTxt, baseUrl) => {
+  const lines = robotsTxt.split(/\r?\n/);
+  const urls = lines
+    .map((line) => line.trim())
+    .filter((line) => /^sitemap:/i.test(line))
+    .map((line) => line.replace(/^sitemap:\s*/i, '').trim())
+    .filter(Boolean)
+    .map((value) => normalizeUrl(value, baseUrl));
+  return [...new Set(urls)];
+};
+
+const extractLocUrlsFromXml = (xml, baseUrl) => {
+  const urls = [];
+  const locRegex = /<loc>\s*([^<]+)\s*<\/loc>/gi;
+  let match;
+  while ((match = locRegex.exec(xml)) !== null) {
+    const raw = match[1];
+    if (!raw) continue;
+    try {
+      urls.push(normalizeUrl(raw, baseUrl));
+    } catch (_error) {
+      // Skip invalid loc entries
+    }
+  }
+  return [...new Set(urls)];
+};
+
+const getHostname = (url) => new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+
+const isSameHostname = (candidateUrl, baseUrl) => {
+  try {
+    const candidateHost = getHostname(candidateUrl);
+    const baseHost = getHostname(baseUrl);
+    return candidateHost === baseHost || candidateHost.endsWith(`.${baseHost}`);
+  } catch (_error) {
+    return false;
+  }
+};
+
+const discoverPagesFromSitemap = async ({ baseUrl, sitemapUrls = [] }) => {
+  if (!baseUrl) {
+    throw new Error('Base URL is required for sitemap discovery.');
+  }
+
+  const queue = [...sitemapUrls];
+  if (queue.length === 0) {
+    const robotsUrl = normalizeUrl('/robots.txt', baseUrl);
+    try {
+      const robotsTxt = await fetchText(robotsUrl);
+      const fromRobots = extractSitemapUrlsFromRobotsTxt(robotsTxt, baseUrl);
+      queue.push(...fromRobots);
+    } catch (error) {
+      console.warn(`Could not read robots.txt (${robotsUrl}): ${error.message}`);
+    }
+  }
+
+  if (queue.length === 0) {
+    // Try common sitemap locations when robots.txt doesn't provide them.
+    queue.push(
+      normalizeUrl('/sitemap.xml', baseUrl),
+      normalizeUrl('/sitemap_index.xml', baseUrl),
+      normalizeUrl('/sitemap-index.xml', baseUrl),
+      normalizeUrl('/wp-sitemap.xml', baseUrl),
+      normalizeUrl('/sitemap/sitemap-index.xml', baseUrl)
+    );
+  }
+
+  const visitedSitemaps = new Set();
+  const discoveredPages = new Set();
+
+  while (queue.length > 0) {
+    const sitemapUrl = queue.shift();
+    if (!sitemapUrl || visitedSitemaps.has(sitemapUrl)) continue;
+    visitedSitemaps.add(sitemapUrl);
+
+    try {
+      console.log(`Trying sitemap: ${sitemapUrl}`);
+      const xml = await fetchText(sitemapUrl);
+      const locUrls = extractLocUrlsFromXml(xml, baseUrl);
+      const isSitemapIndex = /<sitemapindex[\s>]/i.test(xml);
+
+      if (isSitemapIndex) {
+        locUrls.forEach((url) => {
+          if (!visitedSitemaps.has(url)) {
+            queue.push(url);
+          }
+        });
+        continue;
+      }
+
+      locUrls.forEach((pageUrl) => {
+        if (isSameHostname(pageUrl, baseUrl)) {
+          discoveredPages.add(pageUrl);
+        }
+      });
+    } catch (error) {
+      console.warn(`Could not process sitemap ${sitemapUrl}: ${error.message}`);
+    }
+  }
+
+  console.log(`Sitemap discovery complete: ${discoveredPages.size} same-domain page(s) found.`);
+  return [...discoveredPages];
+};
+
 const getPagesFromFile = (pagesFilePath, options = {}) => {
   const extension = path.extname(pagesFilePath).toLowerCase();
   const fileContent = fs.readFileSync(pagesFilePath, 'utf8');
@@ -386,12 +511,14 @@ const getPagesFromFile = (pagesFilePath, options = {}) => {
     .filter((line) => line.length > 0 && !line.startsWith('#'));
 };
 
-const parseCliOptions = () => {
+const parseCliOptions = async () => {
   const args = process.argv.slice(2);
   const baseUrlArg = getCliValue(args, '--base-url');
   const pagesArg = getCliValue(args, '--pages');
   const pagesFileArg = getCliValue(args, '--pages-file');
+  const sitemapUrlArg = getCliValue(args, '--sitemap-url');
   const csvIgnoreColumnsArg = getCliValue(args, '--csv-ignore-columns');
+  const fromSitemap = args.includes('--from-sitemap');
   const crawlOnly = process.env.CRAWL_ONLY === 'true' || args.includes('--crawl-only');
 
   // First non-flag argument that looks like a URL is treated as positional base URL.
@@ -426,6 +553,22 @@ const parseCliOptions = () => {
     pages = [...pages, ...filePages];
   }
 
+  if (fromSitemap) {
+    const sitemapUrls = sitemapUrlArg
+      ? sitemapUrlArg
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean)
+          .map((value) => normalizeUrl(value, baseUrl || undefined))
+      : [];
+
+    const sitemapPages = await discoverPagesFromSitemap({
+      baseUrl,
+      sitemapUrls,
+    });
+    pages = [...pages, ...sitemapPages];
+  }
+
   // De-duplicate while preserving order.
   pages = [...new Set(pages)];
 
@@ -433,12 +576,13 @@ const parseCliOptions = () => {
     baseUrl,
     pages,
     crawlOnly,
+    fromSitemap,
     mode: pages.length > 0 ? 'pages' : 'crawl',
   };
 };
 
 async function runAccessibilityTest() {
-  const options = parseCliOptions();
+  const options = await parseCliOptions();
   const testUrl = options.baseUrl;
 
   if (options.mode === 'crawl' && !testUrl) {
@@ -449,6 +593,7 @@ async function runAccessibilityTest() {
     console.error('  node src/run-a11y-test.js https://example.com --pages /,/about,/contact');
     console.error('  node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.txt');
     console.error('  node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv');
+    console.error('  node src/run-a11y-test.js --from-sitemap https://example.com');
     process.exit(1);
   }
 
@@ -457,6 +602,9 @@ async function runAccessibilityTest() {
   console.log('='.repeat(60));
   if (options.mode === 'pages') {
     console.log(`Testing ${options.pages.length} specific page(s)\n`);
+    if (options.fromSitemap) {
+      console.log('Source: sitemap discovery');
+    }
   } else {
     console.log(`Testing URL: ${testUrl}\n`);
   }
@@ -517,18 +665,17 @@ async function runAccessibilityTest() {
     let results;
     let executionErrors = [];
 
-    if (options.mode === 'pages') {
-      console.log('Running explicit page tests (crawl disabled)...');
+    const runPagesModeTests = async (pagesToTest, summaryLabel) => {
       const pageErrors = [];
       const pagesWithA11yIssues = [];
-      executionErrors = [];
+      const localExecutionErrors = [];
 
       // Reset counters for a clean run (provided by the module)
       if (global.accessibilityLib && typeof global.accessibilityLib.resetErrorCounts === 'function') {
         global.accessibilityLib.resetErrorCounts();
       }
 
-      for (const pageUrl of options.pages) {
+      for (const pageUrl of pagesToTest) {
         console.log(`\nTesting page: ${pageUrl}`);
         try {
           await browser.url(pageUrl);
@@ -545,7 +692,7 @@ async function runAccessibilityTest() {
           }
         } catch (pageError) {
           if (isIgnorableExecutionError(pageError.message)) {
-            executionErrors.push({
+            localExecutionErrors.push({
               url: pageUrl,
               error: pageError.message,
             });
@@ -564,57 +711,102 @@ async function runAccessibilityTest() {
           ? global.accessibilityLib.getAccessibilityTotalError()
           : null;
 
-      results = {
+      const localResults = {
         mode: 'pages',
         crawlOnly: false,
-        totalPages: options.pages.length,
-        pagesTested: options.pages.length,
+        totalPages: pagesToTest.length,
+        pagesTested: pagesToTest.length,
         totalErrors,
         errors: [...pagesWithA11yIssues, ...pageErrors],
       };
 
       // Match crawl+test behavior: generate one consolidated summary report
       // when multiple explicit pages are tested.
-      if (options.pages.length > 1) {
-        const firstUrl = options.pages[0];
+      if (pagesToTest.length > 1) {
+        const firstUrl = pagesToTest[0];
         const domain = new URL(firstUrl).hostname.replace(/^www\./, '');
         const totalDurationMs = Date.now() - testStartTime;
         const totalDuration = `${Math.max(1, Math.round(totalDurationMs / 1000))}s`;
-        await generateComprehensiveReport(results, domain, '0s', totalDuration);
+        await generateComprehensiveReport(localResults, domain, '0s', totalDuration);
+        if (summaryLabel) {
+          console.log(`Consolidated summary generated (${summaryLabel}).`);
+        }
       }
-    } else {
-      // Set crawlOnly to true to only discover pages without running accessibility tests
-      // Useful for testing the crawler and verifying all pages are found
-      const crawlOnly = options.crawlOnly;
-      results = await a11yValidatorFromUrl(testUrl, {
-        maxPages: null,      // Set to null for unlimited (discovers ALL pages including children)
-        maxDepth: 10,        // Maximum depth to crawl (set high to find all nested pages)
-        excludePaths: [      // Exclude these paths from testing
-          '/admin',
-          '/api',
-          '/private',
-        ],
-        count: true,         // Include total error count
-        crawlOnly: crawlOnly, // Set to true to only crawl without testing
-        maxPagesToTest: null, // Limit how many pages to test (5 for testing new features, set to null to test all discovered pages)
-        // auth: authConfig,  // Uncomment to enable authentication
-        // skipPrivatePages: false,  // Set to true to skip pages that require login
-        // privatePageIndicators: ['Login', 'Sign in'],  // Custom indicators for private pages
-      });
+      return { results: localResults, executionErrors: localExecutionErrors };
+    };
 
-      // Keep transient WebDriver/Bidi execution errors out of the accessibility issue report.
-      if (Array.isArray(results.errors)) {
-        const keptErrors = [];
-        const ignoredExecutionErrors = [];
-        results.errors.forEach((entry) => {
-          if (entry && isIgnorableExecutionError(entry.error)) {
-            ignoredExecutionErrors.push(entry);
-          } else {
-            keptErrors.push(entry);
-          }
+    if (options.mode === 'pages') {
+      console.log('Running explicit page tests (crawl disabled)...');
+      const pageRun = await runPagesModeTests(options.pages, 'explicit pages mode');
+      results = pageRun.results;
+      executionErrors = pageRun.executionErrors;
+    } else {
+      // For crawl/crawl-only modes, automatically try sitemap discovery first.
+      // If sitemap is unavailable/empty, fall back to normal link crawling.
+      let sitemapPages = [];
+      try {
+        sitemapPages = await discoverPagesFromSitemap({ baseUrl: testUrl, sitemapUrls: [] });
+      } catch (sitemapError) {
+        console.warn(`Sitemap discovery failed, falling back to crawler: ${sitemapError.message}`);
+      }
+
+      if (sitemapPages.length > 0) {
+        console.log(`Using sitemap discovery: ${sitemapPages.length} page(s) found.`);
+        if (options.crawlOnly) {
+          results = {
+            crawlOnly: true,
+            totalPages: sitemapPages.length,
+            pagesTested: 0,
+            totalErrors: 0,
+            urls: sitemapPages.map((url) => ({
+              url,
+              pageName: '',
+              errors: 0,
+              status: 'not_tested',
+            })),
+            errors: [],
+            pageMap: {},
+            domain: getHostname(testUrl),
+            message: 'Crawl completed from sitemap discovery. Accessibility testing was skipped (crawlOnly mode).',
+          };
+        } else {
+          const pageRun = await runPagesModeTests(sitemapPages, 'sitemap discovery');
+          results = pageRun.results;
+          executionErrors = pageRun.executionErrors;
+        }
+      } else {
+        console.log('No sitemap pages found, using normal crawler discovery.');
+        const crawlOnly = options.crawlOnly;
+        results = await a11yValidatorFromUrl(testUrl, {
+          maxPages: null,      // Set to null for unlimited (discovers ALL pages including children)
+          maxDepth: 10,        // Maximum depth to crawl (set high to find all nested pages)
+          excludePaths: [      // Exclude these paths from testing
+            '/admin',
+            '/api',
+            '/private',
+          ],
+          count: true,         // Include total error count
+          crawlOnly: crawlOnly, // Set to true to only crawl without testing
+          maxPagesToTest: null, // Limit how many pages to test (5 for testing new features, set to null to test all discovered pages)
+          // auth: authConfig,  // Uncomment to enable authentication
+          // skipPrivatePages: false,  // Set to true to skip pages that require login
+          // privatePageIndicators: ['Login', 'Sign in'],  // Custom indicators for private pages
         });
-        results.errors = keptErrors;
-        executionErrors = ignoredExecutionErrors;
+
+        // Keep transient WebDriver/Bidi execution errors out of the accessibility issue report.
+        if (Array.isArray(results.errors)) {
+          const keptErrors = [];
+          const ignoredExecutionErrors = [];
+          results.errors.forEach((entry) => {
+            if (entry && isIgnorableExecutionError(entry.error)) {
+              ignoredExecutionErrors.push(entry);
+            } else {
+              keptErrors.push(entry);
+            }
+          });
+          results.errors = keptErrors;
+          executionErrors = ignoredExecutionErrors;
+        }
       }
     }
 
