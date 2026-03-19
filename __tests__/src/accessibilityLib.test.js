@@ -3,7 +3,8 @@ const path = require('path');
 const { 
   getA11yValidator, 
   getAccessibilityError, 
-  getAccessibilityTotalError 
+  getAccessibilityTotalError,
+  resetErrorCounts
 } = require('../../src/accessibilityLib');
 
 // Mock dependencies
@@ -25,6 +26,9 @@ describe('accessibilityLib', () => {
   beforeEach(() => {
     // Reset error counts
     jest.resetModules();
+    // Ensure counters are reset on the already-imported module too.
+    // (jest.resetModules doesn't re-import the module variable in this test file)
+    resetErrorCounts();
     
     // Mock global variables
     global.browserName = 'chrome';
@@ -142,13 +146,11 @@ describe('accessibilityLib', () => {
     });
 
     test('should run axe and return results when axe is available', async () => {
-      const serializedResults = JSON.stringify(mockAxeResults);
-      
       global.browser.execute = jest.fn()
         .mockResolvedValueOnce(undefined) // Inject axe
         .mockResolvedValueOnce(true); // Axe check returns true
       
-      global.browser.executeAsync = jest.fn().mockResolvedValue(serializedResults);
+      global.browser.executeAsync = jest.fn().mockResolvedValue(mockAxeResults);
 
       const result = await getA11yValidator('test-page');
 
@@ -158,13 +160,11 @@ describe('accessibilityLib', () => {
     });
 
     test('should use default pageName when not provided', async () => {
-      const serializedResults = JSON.stringify(mockAxeResults);
-      
       global.browser.execute = jest.fn()
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(true);
       
-      global.browser.executeAsync = jest.fn().mockResolvedValue(serializedResults);
+      global.browser.executeAsync = jest.fn().mockResolvedValue(mockAxeResults);
 
       await getA11yValidator();
 
@@ -174,13 +174,11 @@ describe('accessibilityLib', () => {
     });
 
     test('should update error counts correctly', async () => {
-      const serializedResults = JSON.stringify(mockAxeResults);
-      
       global.browser.execute = jest.fn()
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(true);
       
-      global.browser.executeAsync = jest.fn().mockResolvedValue(serializedResults);
+      global.browser.executeAsync = jest.fn().mockResolvedValue(mockAxeResults);
 
       await getA11yValidator('test-page');
 
@@ -190,21 +188,19 @@ describe('accessibilityLib', () => {
     });
 
     test('should generate HTML and JSON reports', async () => {
-      const serializedResults = JSON.stringify(mockAxeResults);
-      
       global.browser.execute = jest.fn()
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(true);
       
-      global.browser.executeAsync = jest.fn().mockResolvedValue(serializedResults);
+      global.browser.executeAsync = jest.fn().mockResolvedValue(mockAxeResults);
 
       await getA11yValidator('test-page');
 
       // Should read the report sample
       expect(fs.readFileSync).toHaveBeenCalled();
       
-      // Should create directory if it doesn't exist
-      expect(fs.mkdirSync).toHaveBeenCalled();
+      // Directory exists in this test setup, so mkdir should not be called.
+      expect(fs.mkdirSync).not.toHaveBeenCalled();
       
       // Should write both JSON and HTML reports
       expect(fs.writeFileSync).toHaveBeenCalledTimes(2);
@@ -223,7 +219,7 @@ describe('accessibilityLib', () => {
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(true);
       
-      global.browser.executeAsync = jest.fn().mockResolvedValue('null');
+      global.browser.executeAsync = jest.fn().mockResolvedValue(null);
 
       const result = await getA11yValidator('test-page');
 
@@ -244,13 +240,11 @@ describe('accessibilityLib', () => {
 
     test('should create report directory if it does not exist', async () => {
       fs.existsSync = jest.fn(() => false);
-      const serializedResults = JSON.stringify(mockAxeResults);
-      
       global.browser.execute = jest.fn()
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(true);
       
-      global.browser.executeAsync = jest.fn().mockResolvedValue(serializedResults);
+      global.browser.executeAsync = jest.fn().mockResolvedValue(mockAxeResults);
 
       await getA11yValidator('test-page');
 
@@ -259,13 +253,11 @@ describe('accessibilityLib', () => {
 
     test('should not create directory if it already exists', async () => {
       fs.existsSync = jest.fn(() => true);
-      const serializedResults = JSON.stringify(mockAxeResults);
-      
       global.browser.execute = jest.fn()
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(true);
       
-      global.browser.executeAsync = jest.fn().mockResolvedValue(serializedResults);
+      global.browser.executeAsync = jest.fn().mockResolvedValue(mockAxeResults);
 
       await getA11yValidator('test-page');
 

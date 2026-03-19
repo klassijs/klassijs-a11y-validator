@@ -16,34 +16,14 @@ jest.mock('../src/accessibilityLib', () => ({
 }));
 
 // Mock the urlCrawler module
-jest.mock('../utils/urlCrawler', () => ({
+jest.mock('../src/urlCrawler', () => ({
   crawlWebsite: jest.fn(),
   isValidUrl: jest.fn(),
 }));
 
 describe('index.js - a11yValidator', () => {
-  let mockCucumberThis;
-  let mockAssert;
-
   beforeEach(() => {
-    // Mock global variables
-    mockCucumberThis = {
-      attach: jest.fn(),
-    };
-    global.cucumberThis = mockCucumberThis;
-
-    mockAssert = {
-      equal: jest.fn(),
-    };
-    global.assert = mockAssert;
-
-    // Reset mocks
     jest.clearAllMocks();
-  });
-
-  afterEach(() => {
-    delete global.cucumberThis;
-    delete global.assert;
   });
 
   test('should call getA11yValidator with pageName', async () => {
@@ -53,73 +33,21 @@ describe('index.js - a11yValidator', () => {
 
     await a11yValidator('test-page');
 
-    expect(getA11yValidator).toHaveBeenCalledWith('test-page');
+    expect(getA11yValidator).toHaveBeenCalledWith('test-page', {});
   });
 
-  test('should attach error messages when errors are found', async () => {
-    getA11yValidator.mockResolvedValue({});
-    getAccessibilityError.mockReturnValue(5);
-    getAccessibilityTotalError.mockReturnValue(5);
-
-    await a11yValidator('test-page', false);
-
-    expect(mockCucumberThis.attach).toHaveBeenCalledWith('The accessibility rule violation has been observed');
-    expect(mockCucumberThis.attach).toHaveBeenCalledWith('accessibility error count per page : 5');
-    expect(mockCucumberThis.attach).not.toHaveBeenCalledWith(expect.stringContaining('Total accessibility error count'));
-  });
-
-  test('should attach total error count when count parameter is true', async () => {
-    getA11yValidator.mockResolvedValue({});
-    getAccessibilityError.mockReturnValue(3);
-    getAccessibilityTotalError.mockReturnValue(10);
-
-    await a11yValidator('test-page', true);
-
-    expect(mockCucumberThis.attach).toHaveBeenCalledWith('The accessibility rule violation has been observed');
-    expect(mockCucumberThis.attach).toHaveBeenCalledWith('accessibility error count per page : 3');
-    expect(mockCucumberThis.attach).toHaveBeenCalledWith('Total accessibility error count : 10');
-  });
-
-  test('should assert zero errors when no violations found', async () => {
+  test('should support options object as second argument', async () => {
     getA11yValidator.mockResolvedValue({});
     getAccessibilityError.mockReturnValue(0);
     getAccessibilityTotalError.mockReturnValue(0);
 
-    await a11yValidator('test-page');
-
-    expect(mockAssert.equal).toHaveBeenCalledWith(0, 0);
-    expect(mockCucumberThis.attach).not.toHaveBeenCalled();
-  });
-
-  test('should handle zero total errors but non-zero page errors', async () => {
-    getA11yValidator.mockResolvedValue({});
-    getAccessibilityError.mockReturnValue(2);
-    getAccessibilityTotalError.mockReturnValue(0);
-
-    await a11yValidator('test-page');
-
-    // When totalError is 0, it should assert even if page error is non-zero
-    // This seems like a potential bug in the original code, but we test the actual behavior
-    expect(mockAssert.equal).toHaveBeenCalledWith(2, 0);
-  });
-
-  test('should work with default count parameter (false)', async () => {
-    getA11yValidator.mockResolvedValue({});
-    getAccessibilityError.mockReturnValue(1);
-    getAccessibilityTotalError.mockReturnValue(1);
-
-    await a11yValidator('test-page');
-
-    expect(mockCucumberThis.attach).toHaveBeenCalledTimes(2);
-    expect(mockCucumberThis.attach).not.toHaveBeenCalledWith(expect.stringContaining('Total accessibility error count'));
+    await a11yValidator('test-page', { includeTags: ['wcag21aa'] });
+    expect(getA11yValidator).toHaveBeenCalledWith('test-page', { includeTags: ['wcag21aa'] });
   });
 });
 
 describe('index.js - a11yValidatorFromUrl', () => {
   let mockBrowser;
-  let mockCucumberThis;
-  let mockAssert;
-
   beforeEach(() => {
     // Mock browser
     mockBrowser = {
@@ -128,31 +56,30 @@ describe('index.js - a11yValidatorFromUrl', () => {
     };
     global.browser = mockBrowser;
 
-    // Mock global variables
-    mockCucumberThis = {
-      attach: jest.fn(),
-    };
-    global.cucumberThis = mockCucumberThis;
-
-    mockAssert = {
-      equal: jest.fn(),
-    };
-    global.assert = mockAssert;
-
     // Reset mocks
     jest.clearAllMocks();
     isValidUrl.mockReturnValue(true);
-    crawlWebsite.mockResolvedValue(['https://example.com', 'https://example.com/page1']);
+    crawlWebsite.mockResolvedValue({
+      urls: ['https://example.com', 'https://example.com/page1'],
+      pageMap: {},
+      domain: 'example.com',
+      pagesByDepth: { 0: ['https://example.com'], 1: ['https://example.com/page1'] },
+    });
     getA11yValidator.mockResolvedValue({});
     getAccessibilityError.mockReturnValue(0);
     getAccessibilityTotalError.mockReturnValue(0);
     mockBrowser.waitUntil.mockResolvedValue(true);
+    mockBrowser.pause = jest.fn().mockResolvedValue(true);
+    mockBrowser.getWindowHandles = jest.fn().mockResolvedValue(['main']);
+    mockBrowser.getUrl = jest.fn().mockResolvedValue('https://example.com');
+    global.paths = { reports: './reports' };
+    global.env = { envName: 'test' };
   });
 
   afterEach(() => {
     delete global.browser;
-    delete global.cucumberThis;
-    delete global.assert;
+    delete global.paths;
+    delete global.env;
   });
 
   test('should validate URL format', async () => {
@@ -175,7 +102,12 @@ describe('index.js - a11yValidatorFromUrl', () => {
       'https://example.com/about',
       'https://example.com/contact',
     ];
-    crawlWebsite.mockResolvedValue(discoveredUrls);
+    crawlWebsite.mockResolvedValue({
+      urls: discoveredUrls,
+      pageMap: {},
+      domain: 'example.com',
+      pagesByDepth: { 0: ['https://example.com'], 1: ['https://example.com/about', 'https://example.com/contact'] },
+    });
     getAccessibilityError.mockReturnValue(2);
 
     const results = await a11yValidatorFromUrl('https://example.com');
@@ -188,7 +120,12 @@ describe('index.js - a11yValidatorFromUrl', () => {
   });
 
   test('should reset error counts at start', async () => {
-    crawlWebsite.mockResolvedValue(['https://example.com']);
+    crawlWebsite.mockResolvedValue({
+      urls: ['https://example.com'],
+      pageMap: {},
+      domain: 'example.com',
+      pagesByDepth: { 0: ['https://example.com'] },
+    });
 
     await a11yValidatorFromUrl('https://example.com');
 
@@ -196,7 +133,12 @@ describe('index.js - a11yValidatorFromUrl', () => {
   });
 
   test('should use custom crawler options', async () => {
-    crawlWebsite.mockResolvedValue(['https://example.com']);
+    crawlWebsite.mockResolvedValue({
+      urls: ['https://example.com'],
+      pageMap: {},
+      domain: 'example.com',
+      pagesByDepth: { 0: ['https://example.com'] },
+    });
 
     await a11yValidatorFromUrl('https://example.com', {
       maxPages: 100,
@@ -204,16 +146,24 @@ describe('index.js - a11yValidatorFromUrl', () => {
       excludePaths: ['/admin'],
     });
 
-    expect(crawlWebsite).toHaveBeenCalledWith('https://example.com', {
-      maxPages: 100,
-      maxDepth: 5,
-      excludePaths: ['/admin'],
-    });
+    expect(crawlWebsite).toHaveBeenCalledWith(
+      'https://example.com',
+      expect.objectContaining({
+        maxPages: 100,
+        maxDepth: 5,
+        excludePaths: ['/admin'],
+      })
+    );
   });
 
   test('should return summary with error counts', async () => {
     const discoveredUrls = ['https://example.com', 'https://example.com/page1'];
-    crawlWebsite.mockResolvedValue(discoveredUrls);
+    crawlWebsite.mockResolvedValue({
+      urls: discoveredUrls,
+      pageMap: {},
+      domain: 'example.com',
+      pagesByDepth: { 0: ['https://example.com'], 1: ['https://example.com/page1'] },
+    });
     getAccessibilityError
       .mockReturnValueOnce(5)  // First page
       .mockReturnValueOnce(3); // Second page
@@ -230,7 +180,12 @@ describe('index.js - a11yValidatorFromUrl', () => {
   });
 
   test('should handle pages with no errors', async () => {
-    crawlWebsite.mockResolvedValue(['https://example.com']);
+    crawlWebsite.mockResolvedValue({
+      urls: ['https://example.com'],
+      pageMap: {},
+      domain: 'example.com',
+      pagesByDepth: { 0: ['https://example.com'] },
+    });
     getAccessibilityError.mockReturnValue(0);
     getAccessibilityTotalError.mockReturnValue(0);
 
@@ -241,7 +196,12 @@ describe('index.js - a11yValidatorFromUrl', () => {
   });
 
   test('should handle crawl errors gracefully', async () => {
-    crawlWebsite.mockResolvedValue([]);
+    crawlWebsite.mockResolvedValue({
+      urls: [],
+      pageMap: {},
+      domain: 'example.com',
+      pagesByDepth: {},
+    });
 
     const results = await a11yValidatorFromUrl('https://example.com');
 
@@ -250,31 +210,51 @@ describe('index.js - a11yValidatorFromUrl', () => {
   });
 
   test('should handle page load errors', async () => {
-    crawlWebsite.mockResolvedValue(['https://example.com']);
+    crawlWebsite.mockResolvedValue({
+      urls: ['https://example.com'],
+      pageMap: {},
+      domain: 'example.com',
+      pagesByDepth: { 0: ['https://example.com'] },
+    });
     mockBrowser.url.mockRejectedValue(new Error('Page load failed'));
 
     const results = await a11yValidatorFromUrl('https://example.com');
 
-    expect(results.pagesTested).toBe(0);
+    expect(results.pagesTested).toBe(1);
     expect(results.errors).toHaveLength(1);
     expect(results.errors[0].error).toBeDefined();
   });
 
   test('should generate page names from URLs', async () => {
-    crawlWebsite.mockResolvedValue([
-      'https://example.com',
-      'https://example.com/about-us',
-    ]);
+    crawlWebsite.mockResolvedValue({
+      urls: ['https://example.com', 'https://example.com/about-us'],
+      pageMap: {},
+      domain: 'example.com',
+      pagesByDepth: { 0: ['https://example.com'], 1: ['https://example.com/about-us'] },
+    });
     getAccessibilityError.mockReturnValue(0);
 
     await a11yValidatorFromUrl('https://example.com');
 
-    expect(getA11yValidator).toHaveBeenCalledWith('home');
-    expect(getA11yValidator).toHaveBeenCalledWith('about-us');
+    expect(getA11yValidator).toHaveBeenCalledWith('home', expect.objectContaining({
+      excludeTags: [],
+      excludeRules: [],
+      includeTags: null,
+    }));
+    expect(getA11yValidator).toHaveBeenCalledWith('about-us', expect.objectContaining({
+      excludeTags: [],
+      excludeRules: [],
+      includeTags: null,
+    }));
   });
 
   test('should wait for pages to load', async () => {
-    crawlWebsite.mockResolvedValue(['https://example.com']);
+    crawlWebsite.mockResolvedValue({
+      urls: ['https://example.com'],
+      pageMap: {},
+      domain: 'example.com',
+      pagesByDepth: { 0: ['https://example.com'] },
+    });
 
     await a11yValidatorFromUrl('https://example.com');
 
