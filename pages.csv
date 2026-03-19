@@ -1,0 +1,16 @@
+
+Site URL,Page type
+https://www.oxfordreference.com/, site homepage
+https://www.oxfordreference.com/page/about, public page from topnav
+https://www.oxfordreference.com/page/legal-notice, public page from footernav
+https://www.oxfordreference.com/view/10.1093/acref/9780195065121.001.0001/acref-9780195065121-e-220, view page with images
+https://www.oxfordreference.com/view/10.1093/acref/9780198705383.001.0001/acref-9780198705383-e-0004, view page with audio
+https://www.oxfordreference.com/view/10.1093/acref/9780198841227.001.0001/acref-9780198841227, book homepage
+https://www.oxfordreference.com/search?q=&searchBtn=Search&isQuickSearch=true, Results page (open search)
+https://oxfordreference.com/search?q=corruption&searchBtn=Search&isQuickSearch=true, Results page (term search)
+https://www.oxfordreference.com/browse?btog=book&illus=true&isQuickSearch=true&pageSize=20&refLibType_4=Quick+reference&sort=titlesort&t=ORO%3AAHU00830&type=subjectreference, Results page (filtered)
+https://www.oxfordreference.com/login, sign in
+https://www.oxfordreference.com/signup, create profile
+https://www.oxfordreference.com/oxford/oupmystuff/all, my profile page
+https://www.oxfordreference.com/myaccount, edit profile page
+https://www.oxfordreference.com/page/classical-studies, subject page

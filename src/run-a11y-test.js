@@ -13,13 +13,22 @@
  * 3. Make sure you have the browser installed
  * 
  * Usage:
- *   # Run full accessibility tests
+ *   # Run full accessibility tests by crawling from a start URL
  *   node src/run-a11y-test.js https://example.com
  *   
  *   # Only crawl and discover pages (no accessibility testing)
  *   node src/run-a11y-test.js https://example.com --crawl-only
  *   # OR
  *   CRAWL_ONLY=true node src/run-a11y-test.js https://example.com
+ *
+ *   # Test only specific pages (single or multiple), no crawling
+ *   node src/run-a11y-test.js --pages https://example.com/about
+ *   node src/run-a11y-test.js https://example.com --pages /,/about,/contact
+ *   node src/run-a11y-test.js --base-url https://example.com --pages /,/about,/contact
+ *   node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.txt
+ *   node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv
+ *   node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns notes,status
+ *   node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns 2,3
  *   
  *   # With different browser
  *   BROWSER=safari node src/run-a11y-test.js https://example.com
@@ -27,7 +36,7 @@
  */
 
 const { remote } = require('webdriverio');
-const { a11yValidatorFromUrl } = require('../index');
+const { a11yValidatorFromUrl, a11yValidator } = require('../index');
 const { astellen } = require('klassijs-astellen');
 const os = require('os');
 const path = require('path');
@@ -170,15 +179,219 @@ const setupGlobals = () => {
   global.accessibilityReportList = [];
 };
 
+const getCliValue = (args, flag) => {
+  const index = args.indexOf(flag);
+  if (index === -1 || index + 1 >= args.length) return null;
+  return args[index + 1];
+};
+
+const normalizeUrl = (input, baseUrl) => {
+  try {
+    return new URL(input, baseUrl).href;
+  } catch (error) {
+    throw new Error(`Invalid URL provided: "${input}"`);
+  }
+};
+
+const sanitizePageName = (url) => {
+  try {
+    const parsed = new URL(url);
+    const pathName = parsed.pathname === '/' ? 'home' : parsed.pathname.replace(/^\/+/, '');
+    return `${parsed.hostname}-${pathName}`
+      .replace(/[^a-zA-Z0-9-_]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+  } catch (_error) {
+    return 'page';
+  }
+};
+
+const parseSimpleCsvRows = (content) => {
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < content.length; i += 1) {
+    const char = content[i];
+
+    if (char === '"') {
+      if (inQuotes && content[i + 1] === '"') {
+        cell += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      row.push(cell.trim());
+      cell = '';
+      continue;
+    }
+
+    if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && content[i + 1] === '\n') {
+        i += 1;
+      }
+      row.push(cell.trim());
+      cell = '';
+      rows.push(row);
+      row = [];
+      continue;
+    }
+
+    cell += char;
+  }
+
+  if (cell.length > 0 || row.length > 0) {
+    row.push(cell.trim());
+    rows.push(row);
+  }
+
+  return rows;
+};
+
+const parseCsvIgnoreColumns = (value) => {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const getPagesFromFile = (pagesFilePath, options = {}) => {
+  const extension = path.extname(pagesFilePath).toLowerCase();
+  const fileContent = fs.readFileSync(pagesFilePath, 'utf8');
+
+  if (extension === '.csv') {
+    const rows = parseSimpleCsvRows(fileContent);
+    const ignoreColumnSpecs = options.csvIgnoreColumns || [];
+    const values = [];
+    const firstRow = rows[0] || [];
+    const headerRow = firstRow.map((value) => value.trim().toLowerCase());
+    const hasHeaderRow = headerRow.some((value) =>
+      ['url', 'urls', 'path', 'paths'].includes(value)
+    );
+
+    const ignoredIndexes = new Set();
+    const ignoredNames = new Set(
+      ignoreColumnSpecs
+        .filter((entry) => Number.isNaN(Number(entry)))
+        .map((entry) => entry.toLowerCase())
+    );
+
+    ignoreColumnSpecs.forEach((entry) => {
+      const index = Number(entry);
+      if (Number.isInteger(index) && index >= 0) {
+        ignoredIndexes.add(index);
+      }
+    });
+
+    if (hasHeaderRow && ignoredNames.size > 0) {
+      headerRow.forEach((name, index) => {
+        if (ignoredNames.has(name)) {
+          ignoredIndexes.add(index);
+        }
+      });
+    }
+
+    rows.forEach((row, rowIndex) => {
+      row.forEach((cell, colIndex) => {
+        if (ignoredIndexes.has(colIndex)) return;
+
+        const value = cell.trim();
+        const lower = value.toLowerCase();
+        if (!value || value.startsWith('#')) return;
+        if (
+          rowIndex === 0 &&
+          (lower === 'url' || lower === 'urls' || lower === 'path' || lower === 'paths')
+        ) {
+          return;
+        }
+        values.push(value);
+      });
+    });
+
+    return values;
+  }
+
+  return fileContent
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#'));
+};
+
+const parseCliOptions = () => {
+  const args = process.argv.slice(2);
+  const baseUrlArg = getCliValue(args, '--base-url');
+  const pagesArg = getCliValue(args, '--pages');
+  const pagesFileArg = getCliValue(args, '--pages-file');
+  const csvIgnoreColumnsArg = getCliValue(args, '--csv-ignore-columns');
+  const crawlOnly = process.env.CRAWL_ONLY === 'true' || args.includes('--crawl-only');
+
+  // First non-flag argument is treated as positional URL.
+  const positionalUrl = args.find((arg) => !arg.startsWith('--'));
+  const baseUrl = baseUrlArg || positionalUrl || null;
+
+  let pages = [];
+  if (pagesArg) {
+    pages = pagesArg
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => normalizeUrl(value, baseUrl || undefined));
+  }
+
+  if (pagesFileArg) {
+    const pagesFilePath = path.resolve(pagesFileArg);
+    if (!fs.existsSync(pagesFilePath)) {
+      throw new Error(`Pages file not found: ${pagesFilePath}`);
+    }
+
+    const filePages = getPagesFromFile(pagesFilePath, {
+      csvIgnoreColumns: parseCsvIgnoreColumns(csvIgnoreColumnsArg),
+    })
+      .map((value) => normalizeUrl(value, baseUrl || undefined));
+
+    pages = [...pages, ...filePages];
+  }
+
+  // De-duplicate while preserving order.
+  pages = [...new Set(pages)];
+
+  return {
+    baseUrl,
+    pages,
+    crawlOnly,
+    mode: pages.length > 0 ? 'pages' : 'crawl',
+  };
+};
+
 async function runAccessibilityTest() {
-  // The URL you want to test
-  // const testUrl = process.argv[2] || 'https://www.longfields-primary.org/';
-  const testUrl = process.argv[2];
+  const options = parseCliOptions();
+  const testUrl = options.baseUrl;
+
+  if (options.mode === 'crawl' && !testUrl) {
+    console.error('❌ Missing URL.');
+    console.error('Usage examples:');
+    console.error('  node src/run-a11y-test.js https://example.com');
+    console.error('  node src/run-a11y-test.js --pages https://example.com/about');
+    console.error('  node src/run-a11y-test.js https://example.com --pages /,/about,/contact');
+    console.error('  node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.txt');
+    console.error('  node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv');
+    process.exit(1);
+  }
 
   console.log('='.repeat(60));
   console.log('Accessibility Test Runner');
   console.log('='.repeat(60));
-  console.log(`Testing URL: ${testUrl}\n`);
+  if (options.mode === 'pages') {
+    console.log(`Testing ${options.pages.length} specific page(s)\n`);
+  } else {
+    console.log(`Testing URL: ${testUrl}\n`);
+  }
 
   let browser;
 
@@ -231,58 +444,55 @@ async function runAccessibilityTest() {
       }
       throw browserError;
     }
+    
+    let results;
 
-    // Run accessibility validation
-    // This will:
-    // 1. Crawl the website starting from the provided URL
-    // 2. Discover all internal pages
-    // 3. Test each page for accessibility issues
-    // 4. Generate reports for each page
-    
-    // Optional: Configure authentication for private pages
-    // Uncomment and customize if your site requires login:
-    /*
-    const authConfig = {
-      loginUrl: 'https://yourwebsite.com/login',
-      credentials: {
-        username: process.env.A11Y_USERNAME || 'your-username',
-        password: process.env.A11Y_PASSWORD || 'your-password',
-      },
-      selectors: {
-        username: 'input[name="username"]',  // CSS selector for username field
-        password: 'input[name="password"]',  // CSS selector for password field
-        submit: 'button[type="submit"]',     // CSS selector for submit button
-      },
-      // OR use a custom login function:
-      // loginFunction: async (browser) => {
-      //   await browser.url('https://yourwebsite.com/login');
-      //   await browser.$('#username').setValue('user');
-      //   await browser.$('#password').setValue('pass');
-      //   await browser.$('button[type="submit"]').click();
-      //   await browser.waitUntil(() => browser.getUrl().includes('/dashboard'));
-      // },
-    };
-    */
-    
-    // Set crawlOnly to true to only discover pages without running accessibility tests
-    // Useful for testing the crawler and verifying all pages are found
-    const crawlOnly = process.env.CRAWL_ONLY === 'true' || process.argv.includes('--crawl-only');
-    
-    const results = await a11yValidatorFromUrl(testUrl, {
-      maxPages: null,      // Set to null for unlimited (discovers ALL pages including children)
-      maxDepth: 10,        // Maximum depth to crawl (set high to find all nested pages)
-      excludePaths: [      // Exclude these paths from testing
-        '/admin',
-        '/api',
-        '/private',
-      ],
-      count: true,         // Include total error count
-      crawlOnly: crawlOnly, // Set to true to only crawl without testing
-      maxPagesToTest: null, // Limit how many pages to test (5 for testing new features, set to null to test all discovered pages)
-      // auth: authConfig,  // Uncomment to enable authentication
-      // skipPrivatePages: false,  // Set to true to skip pages that require login
-      // privatePageIndicators: ['Login', 'Sign in'],  // Custom indicators for private pages
-    });
+    if (options.mode === 'pages') {
+      console.log('Running explicit page tests (crawl disabled)...');
+      const pageErrors = [];
+
+      for (const pageUrl of options.pages) {
+        console.log(`\nTesting page: ${pageUrl}`);
+        try {
+          await browser.url(pageUrl);
+          const reportName = sanitizePageName(pageUrl);
+          await a11yValidator(reportName, true);
+        } catch (pageError) {
+          pageErrors.push({
+            url: pageUrl,
+            error: pageError.message,
+          });
+        }
+      }
+
+      results = {
+        mode: 'pages',
+        crawlOnly: false,
+        totalPages: options.pages.length,
+        pagesTested: options.pages.length,
+        totalErrors: null,
+        errors: pageErrors,
+      };
+    } else {
+      // Set crawlOnly to true to only discover pages without running accessibility tests
+      // Useful for testing the crawler and verifying all pages are found
+      const crawlOnly = options.crawlOnly;
+      results = await a11yValidatorFromUrl(testUrl, {
+        maxPages: null,      // Set to null for unlimited (discovers ALL pages including children)
+        maxDepth: 10,        // Maximum depth to crawl (set high to find all nested pages)
+        excludePaths: [      // Exclude these paths from testing
+          '/admin',
+          '/api',
+          '/private',
+        ],
+        count: true,         // Include total error count
+        crawlOnly: crawlOnly, // Set to true to only crawl without testing
+        maxPagesToTest: null, // Limit how many pages to test (5 for testing new features, set to null to test all discovered pages)
+        // auth: authConfig,  // Uncomment to enable authentication
+        // skipPrivatePages: false,  // Set to true to skip pages that require login
+        // privatePageIndicators: ['Login', 'Sign in'],  // Custom indicators for private pages
+      });
+    }
 
     // Display results summary
     if (results.crawlOnly) {
@@ -297,8 +507,12 @@ async function runAccessibilityTest() {
       console.log('Test Results Summary');
       // console.log('='.repeat(60));
       console.log(`Total pages discovered: ${results.totalPages}`);
-      // console.log(`Pages tested: ${results.pagesTested}`);
-      // console.log(`Total accessibility errors: ${results.totalErrors}`);
+      if (typeof results.pagesTested === 'number') {
+        console.log(`Pages tested: ${results.pagesTested}`);
+      }
+      if (typeof results.totalErrors === 'number') {
+        console.log(`Total accessibility errors: ${results.totalErrors}`);
+      }
       // console.log(`Pages with errors: ${results.errors.length}`);
     }
 

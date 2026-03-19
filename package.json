@@ -22,7 +22,11 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "example": "node src/run-a11y-test.js"
+    "a11y:crawl": "node src/run-a11y-test.js",
+    "a11y:crawl-only": "node src/run-a11y-test.js --crawl-only",
+    "a11y:pages": "node src/run-a11y-test.js --pages",
+    "a11y:pages-file": "node src/run-a11y-test.js --pages-file",
+    "a11y:base-pages": "node src/run-a11y-test.js --base-url"
   },
   "repository": {
     "type": "git",

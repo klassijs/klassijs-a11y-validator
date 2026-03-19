@@ -40,22 +40,130 @@ pnpm add -D geckodriver
 
 ## Quick Start - Testing a Real Website
 
-The easiest way to test a real website is using the provided example:
+The runner in `src/run-a11y-test.js` now supports three modes:
+- Crawl and test an entire site from a start URL
+- Crawl-only (discover pages without accessibility checks)
+- Test specific page(s) only (single URL, comma list, or file list)
 
 ```bash
-# Install dependencies first (see above)
-# Then run the example with a URL
+# 1) Crawl and test from a start URL
 node src/run-a11y-test.js https://example.com
 
-# Or use the npm script
-pnpm example https://example.com
+# 2) Crawl-only (discover pages, skip a11y tests)
+node src/run-a11y-test.js https://example.com --crawl-only
+
+# 3) Test specific pages only (no crawling)
+node src/run-a11y-test.js https://example.com --pages /,/about,/contact
+
+# 4) Test pages from file (`.txt` or `.csv`)
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.txt
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv
+
+# 5) CSV: ignore columns by header name or zero-based index
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns notes,status
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns 2,3
 ```
 
-See [examples/README.md](examples/README.md) for detailed instructions and customization options.
+### NPM Scripts
+
+The package provides scripts for each mode:
+
+```bash
+# Crawl and test
+pnpm a11y:crawl https://example.com
+
+# Crawl only
+pnpm a11y:crawl-only https://example.com
+
+# Specific page(s)
+pnpm a11y:pages https://example.com/about
+pnpm a11y:base-pages https://example.com --pages /,/about,/contact
+
+# Pages from file
+pnpm a11y:pages-file ./pages.txt
+pnpm a11y:base-pages https://example.com --pages-file ./pages.txt
+pnpm a11y:base-pages https://example.com --pages-file ./pages.csv
+pnpm a11y:base-pages https://example.com --pages-file ./pages.csv --csv-ignore-columns notes,status
+```
+
+`pages.txt` and `pages.csv` support:
+- One URL or path per line
+- Blank lines
+- Comments starting with `#`
+
+For CSV files, you can ignore columns with:
+- `--csv-ignore-columns notes,status` (header names)
+- `--csv-ignore-columns 2,3` (zero-based indexes)
+
+Example:
+
+```txt
+# Relative paths
+/
+/about
+/contact
+
+# Absolute URL also works
+https://example.com/pricing
+```
+
+CSV example:
+
+```csv
+url,path
+https://example.com/pricing,/about
+/contact,
+```
 
 ## Usage
 
-Here's a guide on how to use the **a11y-validator** to check the accessibility of a webpage or application:
+You can use the validator via:
+- The CLI runner (`src/run-a11y-test.js`) for real-site automation
+- The API (`a11yValidator` / `a11yValidatorFromUrl`) inside your own scripts
+
+### CLI Runner Modes (`src/run-a11y-test.js`)
+
+#### 1) Crawl and test a whole site
+
+```bash
+node src/run-a11y-test.js https://yourwebsite.com
+```
+
+This mode:
+- Crawls internal pages from the start URL
+- Runs accessibility checks on discovered pages
+- Generates reports in the reports directory
+
+#### 2) Crawl-only (discover pages only)
+
+```bash
+node src/run-a11y-test.js https://yourwebsite.com --crawl-only
+# OR
+CRAWL_ONLY=true node src/run-a11y-test.js https://yourwebsite.com
+```
+
+This mode:
+- Crawls and lists discoverable pages
+- Skips accessibility checks
+- Helps verify coverage before full testing
+
+#### 3) Test only specific pages (no crawling)
+
+```bash
+# Single explicit page
+node src/run-a11y-test.js --pages https://yourwebsite.com/about
+
+# Multiple pages using paths (with base URL)
+node src/run-a11y-test.js https://yourwebsite.com --pages /,/about,/contact
+# OR
+node src/run-a11y-test.js --base-url https://yourwebsite.com --pages /,/about,/contact
+
+# From file
+node src/run-a11y-test.js --base-url https://yourwebsite.com --pages-file ./pages.txt
+node src/run-a11y-test.js --base-url https://yourwebsite.com --pages-file ./pages.csv
+```
+
+Use this mode when you only want to validate selected pages instead of the full site.
 
 ### Single Page Validation
 
@@ -76,8 +184,6 @@ Here's a guide on how to use the **a11y-validator** to check the accessibility o
    ```
 
 ### Multi-Page Validation from URL
-
-**New Feature**: You can now pass a URL and the validator will automatically discover and test all pages on the website!
 
 1. **Import the URL Validator**:
    ```javascript
@@ -228,6 +334,57 @@ const { remote } = require('webdriverio');
     
     await browser.deleteSession();
 })();
+```
+
+## Troubleshooting
+
+### Quick Decision Tree
+
+- If you get `EACCES` or `permission denied`: set `CACHE_DIR=~/.webdriverio-cache` and retry.
+- If Chrome driver fails to start: use `BROWSER=safari` on macOS for a quick unblock.
+- If Safari is not an option: install driver manually (`brew install chromedriver` or `brew install geckodriver`), then verify with `which`.
+- If issues persist: clear caches (`rm -rf /tmp/chromedriver* ~/.webdriverio-cache`) and run again.
+
+### Browser Driver / Permission Errors
+
+If you see errors such as `EACCES`, `permission denied`, or chromedriver/geckodriver executable issues:
+
+```bash
+# Use a user-writable cache directory
+CACHE_DIR=~/.webdriverio-cache node src/run-a11y-test.js https://example.com
+
+# Or export it for your session
+export CACHE_DIR=~/.webdriverio-cache
+node src/run-a11y-test.js https://example.com
+```
+
+If Chrome setup is problematic on macOS, use Safari (no extra driver install required):
+
+```bash
+BROWSER=safari node src/run-a11y-test.js https://example.com
+```
+
+Or install a browser driver manually:
+
+```bash
+# Chrome
+brew install chromedriver
+
+# Firefox
+brew install geckodriver
+```
+
+Useful checks:
+
+```bash
+which chromedriver
+which geckodriver
+```
+
+If you still have temp/cache issues, clean old driver caches and retry:
+
+```bash
+rm -rf /tmp/chromedriver* ~/.webdriverio-cache
 ```
 
 ## Contributing
