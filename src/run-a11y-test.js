@@ -36,7 +36,7 @@
  */
 
 const { remote } = require('webdriverio');
-const { a11yValidatorFromUrl, a11yValidator } = require('../index');
+const { a11yValidatorFromUrl, a11yValidator, generateComprehensiveReport } = require('../index');
 const { astellen } = require('klassijs-astellen');
 const os = require('os');
 const path = require('path');
@@ -185,11 +185,49 @@ const getCliValue = (args, flag) => {
   return args[index + 1];
 };
 
+const cleanUrlInput = (input) => {
+  if (input === null || input === undefined) return '';
+  let value = String(input);
+  // Remove BOM and common zero-width characters that can appear in CSV exports
+  value = value.replace(/^\uFEFF/, '');
+  value = value.replace(/[\u200B-\u200D\u2060]/g, '');
+  // Normalize non-breaking/odd whitespace to normal spaces, then trim
+  value = value.replace(/[\u00A0\u1680\u180E\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
+  // Remove ASCII control characters (including NULL) that can break URL parsing
+  value = value.replace(/[\u0000-\u001F\u007F]/g, '');
+  value = value.trim();
+  // Strip surrounding single/double quotes if present
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1).trim();
+  }
+  return value;
+};
+
+const describeHiddenChars = (value) => {
+  const s = String(value);
+  const codes = [];
+  for (let i = 0; i < s.length; i += 1) {
+    const code = s.charCodeAt(i);
+    if (code < 32 || code === 127 || code === 160) {
+      codes.push(`U+${code.toString(16).toUpperCase().padStart(4, '0')}`);
+    }
+  }
+  return codes.length > 0 ? codes.join(', ') : null;
+};
+
 const normalizeUrl = (input, baseUrl) => {
+  const cleaned = cleanUrlInput(input);
   try {
-    return new URL(input, baseUrl).href;
+    return new URL(cleaned, baseUrl).href;
   } catch (error) {
-    throw new Error(`Invalid URL provided: "${input}"`);
+    const hidden = describeHiddenChars(input) || describeHiddenChars(cleaned);
+    if (hidden) {
+      throw new Error(`Invalid URL provided: ${JSON.stringify(cleaned)} (hidden chars: ${hidden})`);
+    }
+    throw new Error(`Invalid URL provided: ${JSON.stringify(cleaned)}`);
   }
 };
 
@@ -261,6 +299,28 @@ const parseCsvIgnoreColumns = (value) => {
     .filter(Boolean);
 };
 
+const isIgnorableExecutionError = (message) => {
+  if (!message) return false;
+  const normalized = String(message).toLowerCase();
+  return (
+    normalized.includes('webdriver bidi command "script.callfunction" failed') ||
+    normalized.includes('cannot find context with specified id') ||
+    normalized.includes('no such frame') ||
+    normalized.includes('browsingcontext')
+  );
+};
+
+const looksLikeUrlOrPath = (value) => {
+  if (!value) return false;
+  const trimmed = String(value).trim();
+  if (!trimmed) return false;
+  return (
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('/')
+  );
+};
+
 const getPagesFromFile = (pagesFilePath, options = {}) => {
   const extension = path.extname(pagesFilePath).toLowerCase();
   const fileContent = fs.readFileSync(pagesFilePath, 'utf8');
@@ -310,6 +370,9 @@ const getPagesFromFile = (pagesFilePath, options = {}) => {
         ) {
           return;
         }
+        if (!looksLikeUrlOrPath(value)) {
+          return;
+        }
         values.push(value);
       });
     });
@@ -331,8 +394,13 @@ const parseCliOptions = () => {
   const csvIgnoreColumnsArg = getCliValue(args, '--csv-ignore-columns');
   const crawlOnly = process.env.CRAWL_ONLY === 'true' || args.includes('--crawl-only');
 
-  // First non-flag argument is treated as positional URL.
-  const positionalUrl = args.find((arg) => !arg.startsWith('--'));
+  // First non-flag argument that looks like a URL is treated as positional base URL.
+  // This prevents file paths like "./pages.csv" from being misinterpreted as a base URL.
+  const positionalUrl = args.find(
+    (arg) =>
+      !arg.startsWith('--') &&
+      (String(arg).startsWith('http://') || String(arg).startsWith('https://'))
+  );
   const baseUrl = baseUrlArg || positionalUrl || null;
 
   let pages = [];
@@ -445,11 +513,20 @@ async function runAccessibilityTest() {
       throw browserError;
     }
     
+    const testStartTime = Date.now();
     let results;
+    let executionErrors = [];
 
     if (options.mode === 'pages') {
       console.log('Running explicit page tests (crawl disabled)...');
       const pageErrors = [];
+      const pagesWithA11yIssues = [];
+      executionErrors = [];
+
+      // Reset counters for a clean run (provided by the module)
+      if (global.accessibilityLib && typeof global.accessibilityLib.resetErrorCounts === 'function') {
+        global.accessibilityLib.resetErrorCounts();
+      }
 
       for (const pageUrl of options.pages) {
         console.log(`\nTesting page: ${pageUrl}`);
@@ -457,7 +534,24 @@ async function runAccessibilityTest() {
           await browser.url(pageUrl);
           const reportName = sanitizePageName(pageUrl);
           await a11yValidator(reportName, true);
+
+          // Track per-page and total errors (if available)
+          const perPageErrors =
+            global.accessibilityLib && typeof global.accessibilityLib.getAccessibilityError === 'function'
+              ? global.accessibilityLib.getAccessibilityError()
+              : null;
+          if (typeof perPageErrors === 'number' && perPageErrors > 0) {
+            pagesWithA11yIssues.push({ url: pageUrl, errors: perPageErrors });
+          }
         } catch (pageError) {
+          if (isIgnorableExecutionError(pageError.message)) {
+            executionErrors.push({
+              url: pageUrl,
+              error: pageError.message,
+            });
+            continue;
+          }
+
           pageErrors.push({
             url: pageUrl,
             error: pageError.message,
@@ -465,14 +559,29 @@ async function runAccessibilityTest() {
         }
       }
 
+      const totalErrors =
+        global.accessibilityLib && typeof global.accessibilityLib.getAccessibilityTotalError === 'function'
+          ? global.accessibilityLib.getAccessibilityTotalError()
+          : null;
+
       results = {
         mode: 'pages',
         crawlOnly: false,
         totalPages: options.pages.length,
         pagesTested: options.pages.length,
-        totalErrors: null,
-        errors: pageErrors,
+        totalErrors,
+        errors: [...pagesWithA11yIssues, ...pageErrors],
       };
+
+      // Match crawl+test behavior: generate one consolidated summary report
+      // when multiple explicit pages are tested.
+      if (options.pages.length > 1) {
+        const firstUrl = options.pages[0];
+        const domain = new URL(firstUrl).hostname.replace(/^www\./, '');
+        const totalDurationMs = Date.now() - testStartTime;
+        const totalDuration = `${Math.max(1, Math.round(totalDurationMs / 1000))}s`;
+        await generateComprehensiveReport(results, domain, '0s', totalDuration);
+      }
     } else {
       // Set crawlOnly to true to only discover pages without running accessibility tests
       // Useful for testing the crawler and verifying all pages are found
@@ -492,6 +601,21 @@ async function runAccessibilityTest() {
         // skipPrivatePages: false,  // Set to true to skip pages that require login
         // privatePageIndicators: ['Login', 'Sign in'],  // Custom indicators for private pages
       });
+
+      // Keep transient WebDriver/Bidi execution errors out of the accessibility issue report.
+      if (Array.isArray(results.errors)) {
+        const keptErrors = [];
+        const ignoredExecutionErrors = [];
+        results.errors.forEach((entry) => {
+          if (entry && isIgnorableExecutionError(entry.error)) {
+            ignoredExecutionErrors.push(entry);
+          } else {
+            keptErrors.push(entry);
+          }
+        });
+        results.errors = keptErrors;
+        executionErrors = ignoredExecutionErrors;
+      }
     }
 
     // Display results summary
@@ -527,6 +651,10 @@ async function runAccessibilityTest() {
           console.log(`     Error: ${error.error}`);
         }
       });
+    }
+
+    if (executionErrors.length > 0) {
+      console.log(`\nIgnored ${executionErrors.length} transient browser execution error(s) (not included in accessibility summary).`);
     }
 
     // console.log('\n' + '='.repeat(60));
@@ -566,6 +694,13 @@ if (require.main === module) {
     })
     .catch((error) => {
       console.error('\n❌ Accessibility test failed!');
+      if (error?.message) {
+        console.error(error.message);
+      }
+      if (error?.stack) {
+        console.error('\nStack trace:');
+        console.error(error.stack);
+      }
       process.exit(1);
     });
 }

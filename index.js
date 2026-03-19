@@ -1378,4 +1378,5 @@ async function accessibilityError(count) {
 module.exports = { 
   a11yValidator,
   a11yValidatorFromUrl,
+  generateComprehensiveReport,
 };
