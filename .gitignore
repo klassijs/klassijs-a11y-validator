@@ -10,3 +10,10 @@ logs
 node_modules/
 .DS_Store
 *.tgz
+reports/
+examples/
+
+reports.zip
+*.zip
+*.txt
+*.csv
