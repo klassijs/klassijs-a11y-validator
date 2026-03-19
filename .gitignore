@@ -15,3 +15,5 @@ examples/
 
 reports.zip
 *.zip
+*.txt
+*.csv
