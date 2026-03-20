@@ -67,38 +67,35 @@ async function getA11yValidator(pageName, options = {}) {
     const excludeRulesParam = JSON.parse(excludeRulesJson);
     const includeTagsParam = includeTagsJson ? JSON.parse(includeTagsJson) : null;
     
-    // Default tags: broad WCAG coverage (2.0/2.1/2.2 at A/AA/AAA) plus best-practice.
-    const defaultTags = [
-      'wcag2a',      // WCAG 2.0 Level A
-      'wcag2aa',     // WCAG 2.0 Level AA
-      'wcag2aaa',    // WCAG 2.0 Level AAA
-      'wcag21a',     // WCAG 2.1 Level A
-      'wcag21aa',    // WCAG 2.1 Level AA
-      'wcag21aaa',   // WCAG 2.1 Level AAA
-      'wcag22a',     // WCAG 2.2 Level A
-      'wcag22aa',    // WCAG 2.2 Level AA
-      'wcag22aaa',   // WCAG 2.2 Level AAA
-      'best-practice' // Additional best practices
-    ];
+    const hasExplicitIncludeTags = Array.isArray(includeTagsParam) && includeTagsParam.length > 0;
     
-    // Use includeTags if provided, otherwise use defaultTags
-    let tags = includeTagsParam && Array.isArray(includeTagsParam) && includeTagsParam.length > 0 
-      ? includeTagsParam 
-      : defaultTags;
+    // Build axe configuration:
+    // - If includeTags is provided, run only those tags (and honor excludeTags)
+    // - Otherwise run all rules by default, except rules tagged 'experimental'
+    const axeConfig = {};
     
-    // Remove excluded tags (ensure excludeTagsParam is an array)
-    if (Array.isArray(excludeTagsParam) && excludeTagsParam.length > 0) {
-      tags = tags.filter(tag => !excludeTagsParam.includes(tag));
+    if (hasExplicitIncludeTags) {
+      let tags = includeTagsParam;
+      if (Array.isArray(excludeTagsParam) && excludeTagsParam.length > 0) {
+        tags = tags.filter(tag => !excludeTagsParam.includes(tag));
+      }
+      axeConfig.tags = tags;
+    } else {
+      // By default include all rules and disable 'experimental' tagged rules.
+      const allRules = typeof axe.getRules === 'function' ? axe.getRules() : [];
+      if (Array.isArray(allRules) && allRules.length > 0) {
+        axeConfig.rules = {};
+        allRules.forEach((rule) => {
+          if (Array.isArray(rule.tags) && rule.tags.includes('experimental')) {
+            axeConfig.rules[rule.ruleId] = { enabled: false };
+          }
+        });
+      }
     }
-    
-    // Build axe configuration
-    const axeConfig = {
-      tags: tags
-    };
     
     // Exclude specific rules if provided (ensure excludeRulesParam is an array)
     if (Array.isArray(excludeRulesParam) && excludeRulesParam.length > 0) {
-      axeConfig.rules = {};
+      axeConfig.rules = axeConfig.rules || {};
       excludeRulesParam.forEach(ruleId => {
         axeConfig.rules[ruleId] = { enabled: false };
       });

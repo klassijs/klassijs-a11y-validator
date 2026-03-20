@@ -325,6 +325,14 @@ const parseCsvIgnoreColumns = (value) => {
     .filter(Boolean);
 };
 
+const parseCommaSeparated = (value) => {
+  if (!value) return [];
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
 const isIgnorableExecutionError = (message) => {
   if (!message) return false;
   const normalized = String(message).toLowerCase();
@@ -523,6 +531,9 @@ const parseCliOptions = async () => {
   const pagesFileArg = getCliValue(args, '--pages-file');
   const sitemapUrlArg = getCliValue(args, '--sitemap-url');
   const csvIgnoreColumnsArg = getCliValue(args, '--csv-ignore-columns');
+  const includeTagsArg = getCliValue(args, '--include-tags');
+  const excludeTagsArg = getCliValue(args, '--exclude-tags');
+  const excludeRulesArg = getCliValue(args, '--exclude-rules');
   const fromSitemap = args.includes('--from-sitemap');
   const crawlOnly = process.env.CRAWL_ONLY === 'true' || args.includes('--crawl-only');
 
@@ -593,6 +604,11 @@ const parseCliOptions = async () => {
     crawlOnly,
     fromSitemap,
     authConfig,
+    a11yRuleOptions: {
+      includeTags: parseCommaSeparated(includeTagsArg || process.env.A11Y_INCLUDE_TAGS),
+      excludeTags: parseCommaSeparated(excludeTagsArg || process.env.A11Y_EXCLUDE_TAGS),
+      excludeRules: parseCommaSeparated(excludeRulesArg || process.env.A11Y_EXCLUDE_RULES),
+    },
     mode: pages.length > 0 ? 'pages' : 'crawl',
   };
 };
@@ -601,6 +617,7 @@ async function runAccessibilityTest() {
   const options = await parseCliOptions();
   const testUrl = options.baseUrl;
   const authConfig = options.authConfig;
+  const a11yRuleOptions = options.a11yRuleOptions || {};
 
   if (options.mode === 'crawl' && !testUrl) {
     console.error('❌ Missing URL.');
@@ -697,7 +714,7 @@ async function runAccessibilityTest() {
         try {
           await browser.url(pageUrl);
           const reportName = sanitizePageName(pageUrl);
-          await a11yValidator(reportName, true);
+          await a11yValidator(reportName, true, a11yRuleOptions);
 
           // Track per-page and total errors (if available)
           const perPageErrors =
@@ -816,6 +833,9 @@ async function runAccessibilityTest() {
             auth: authConfig,
             skipPrivatePages: false,
             privatePageIndicators: ['Login', 'Sign in', 'Authentication required'],
+            includeTags: a11yRuleOptions.includeTags,
+            excludeTags: a11yRuleOptions.excludeTags,
+            excludeRules: a11yRuleOptions.excludeRules,
         });
 
         // Keep transient WebDriver/Bidi execution errors out of the accessibility issue report.

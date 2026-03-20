@@ -18,3 +18,8 @@ reports.zip
 *.zip
 *.txt
 *.csv
+
+# Keep sample inventory files in version control
+!examples/
+!examples/page-inventory/
+!examples/page-inventory/*.csv
