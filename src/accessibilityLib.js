@@ -67,16 +67,17 @@ async function getA11yValidator(pageName, options = {}) {
     const excludeRulesParam = JSON.parse(excludeRulesJson);
     const includeTagsParam = includeTagsJson ? JSON.parse(includeTagsJson) : null;
     
-    // Default tags: all WCAG standards (2.0, 2.1, 2.2) at Level A and AA
-    // Note: wcag22a (WCAG 2.2 Level A) is not available in axe-core 4.10.2
-    // WCAG 2.2 Level A rules are tagged with specific success criteria (wcag221, wcag222, etc.)
+    // Default tags: broad WCAG coverage (2.0/2.1/2.2 at A/AA/AAA) plus best-practice.
     const defaultTags = [
       'wcag2a',      // WCAG 2.0 Level A
       'wcag2aa',     // WCAG 2.0 Level AA
+      'wcag2aaa',    // WCAG 2.0 Level AAA
       'wcag21a',     // WCAG 2.1 Level A
       'wcag21aa',    // WCAG 2.1 Level AA
-      // 'wcag22a',  // NOT SUPPORTED in axe-core 4.10.2 - WCAG 2.2 Level A rules use specific tags (wcag221, wcag222, etc.)
+      'wcag21aaa',   // WCAG 2.1 Level AAA
+      'wcag22a',     // WCAG 2.2 Level A
       'wcag22aa',    // WCAG 2.2 Level AA
+      'wcag22aaa',   // WCAG 2.2 Level AAA
       'best-practice' // Additional best practices
     ];
     
