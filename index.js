@@ -19,7 +19,7 @@ function getLegacySinglePageSummaryState() {
     global.__a11yLegacySinglePageSummaryState = {
       startedAtMs: Date.now(),
       pageCount: 0,
-      lastGeneratedAtMs: 0,
+      hasGeneratedSummary: false,
     };
   }
   return global.__a11yLegacySinglePageSummaryState;
@@ -47,17 +47,17 @@ function resolveDomainForSummary() {
   }
 }
 
-async function maybeGenerateSummaryForLegacySinglePageFlow() {
+async function maybeGenerateSummaryForLegacySinglePageFlow(count) {
   const state = getLegacySinglePageSummaryState();
-  if (state.pageCount <= 1) return;
+  // Only generate for legacy single-page flows when caller indicates "final/total"
+  // using count=true and we've validated more than one page.
+  if (!count || state.pageCount <= 1 || state.hasGeneratedSummary) return;
 
   const now = Date.now();
-  if (now - state.lastGeneratedAtMs < 300) return;
-  state.lastGeneratedAtMs = now;
-
   const domain = resolveDomainForSummary();
   const totalDuration = formatDuration(now - state.startedAtMs);
   await generateComprehensiveReport({}, domain, '0s', totalDuration);
+  state.hasGeneratedSummary = true;
 }
 
 /**
@@ -83,7 +83,7 @@ async function a11yValidator(pageName, countOrOptions = false, options = {}) {
   // comprehensive summary without requiring test code changes.
   const state = getLegacySinglePageSummaryState();
   state.pageCount += 1;
-  await maybeGenerateSummaryForLegacySinglePageFlow();
+  await maybeGenerateSummaryForLegacySinglePageFlow(count);
 }
 
 /**
