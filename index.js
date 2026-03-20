@@ -14,6 +14,52 @@ if (fs.existsSync(accessibility_lib)) {
   global.accessibilityReportList = rList;
 } else console.error('No Accessibility Lib');
 
+function getLegacySinglePageSummaryState() {
+  if (!global.__a11yLegacySinglePageSummaryState) {
+    global.__a11yLegacySinglePageSummaryState = {
+      startedAtMs: Date.now(),
+      pageCount: 0,
+      lastGeneratedAtMs: 0,
+    };
+  }
+  return global.__a11yLegacySinglePageSummaryState;
+}
+
+function formatDuration(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+  return parts.join(' ');
+}
+
+function resolveDomainForSummary() {
+  const baseUrl = global.env?.base_url || '';
+  if (!baseUrl) return 'unknown-domain';
+  try {
+    return new URL(baseUrl).hostname || 'unknown-domain';
+  } catch (_e) {
+    return 'unknown-domain';
+  }
+}
+
+async function maybeGenerateSummaryForLegacySinglePageFlow() {
+  const state = getLegacySinglePageSummaryState();
+  if (state.pageCount <= 1) return;
+
+  const now = Date.now();
+  if (now - state.lastGeneratedAtMs < 300) return;
+  state.lastGeneratedAtMs = now;
+
+  const domain = resolveDomainForSummary();
+  const totalDuration = formatDuration(now - state.startedAtMs);
+  await generateComprehensiveReport({}, domain, '0s', totalDuration);
+}
+
 /**
  * Validates accessibility for a single page
  * @param {string} pageName - Name/identifier for the page (used in reports)
@@ -31,6 +77,13 @@ async function a11yValidator(pageName, countOrOptions = false, options = {}) {
   // Run the accessibility report and wait for it to complete
   await getA11yValidator(pageName, a11yOptions);
   await accessibilityError(count);
+
+  // Backward-compatible behavior for legacy tests:
+  // if the single-page API is called for multiple pages in one run, auto-generate
+  // comprehensive summary without requiring test code changes.
+  const state = getLegacySinglePageSummaryState();
+  state.pageCount += 1;
+  await maybeGenerateSummaryForLegacySinglePageFlow();
 }
 
 /**
