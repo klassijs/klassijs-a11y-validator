@@ -1,4 +1,4 @@
-const { a11yValidator, a11yValidatorFromUrl } = require('../index');
+const { a11yValidator, a11yValidatorFromUrl, a11yValidatorFromPagesFile } = require('../index');
 const { 
   getA11yValidator, 
   getAccessibilityError, 
@@ -6,6 +6,8 @@ const {
   resetErrorCounts,
 } = require('../src/accessibilityLib');
 const { crawlWebsite, isValidUrl } = require('../src/urlCrawler');
+const { discoverPagesFromSitemap } = require('../src/sitemapDiscovery');
+const { getPagesFromFile } = require('../src/pagesFileParser');
 
 // Mock the accessibilityLib module
 jest.mock('../src/accessibilityLib', () => ({
@@ -19,6 +21,16 @@ jest.mock('../src/accessibilityLib', () => ({
 jest.mock('../src/urlCrawler', () => ({
   crawlWebsite: jest.fn(),
   isValidUrl: jest.fn(),
+  authenticate: jest.fn(),
+  isPrivatePage: jest.fn(),
+}));
+
+jest.mock('../src/sitemapDiscovery', () => ({
+  discoverPagesFromSitemap: jest.fn(),
+}));
+
+jest.mock('../src/pagesFileParser', () => ({
+  getPagesFromFile: jest.fn(),
 }));
 
 describe('index.js - a11yValidator', () => {
@@ -59,6 +71,7 @@ describe('index.js - a11yValidatorFromUrl', () => {
     // Reset mocks
     jest.clearAllMocks();
     isValidUrl.mockReturnValue(true);
+    discoverPagesFromSitemap.mockResolvedValue([]);
     crawlWebsite.mockResolvedValue({
       urls: ['https://example.com', 'https://example.com/page1'],
       pageMap: {},
@@ -259,5 +272,63 @@ describe('index.js - a11yValidatorFromUrl', () => {
     await a11yValidatorFromUrl('https://example.com');
 
     expect(mockBrowser.waitUntil).toHaveBeenCalled();
+  });
+});
+
+describe('index.js - a11yValidatorFromPagesFile', () => {
+  let mockBrowser;
+
+  beforeEach(() => {
+    mockBrowser = {
+      url: jest.fn(),
+      waitUntil: jest.fn(),
+    };
+    global.browser = mockBrowser;
+
+    jest.clearAllMocks();
+
+    getPagesFromFile.mockReturnValue(['https://example.com', 'https://example.com/about-us']);
+    getA11yValidator.mockResolvedValue({});
+    getAccessibilityError.mockReturnValue(0);
+    getAccessibilityTotalError.mockReturnValue(0);
+    mockBrowser.waitUntil.mockResolvedValue(true);
+    mockBrowser.pause = jest.fn().mockResolvedValue(true);
+    mockBrowser.getWindowHandles = jest.fn().mockResolvedValue(['main']);
+    mockBrowser.getUrl = jest.fn().mockResolvedValue('https://example.com');
+
+    global.paths = { reports: './reports' };
+    global.env = { envName: 'test' };
+  });
+
+  afterEach(() => {
+    delete global.browser;
+    delete global.paths;
+    delete global.env;
+  });
+
+  test('should validate pages loaded from csv/txt file', async () => {
+    const results = await a11yValidatorFromPagesFile('./pages.csv', {
+      baseUrl: 'https://example.com',
+      csvIgnoreColumns: ['pagetype'],
+    });
+
+    expect(getPagesFromFile).toHaveBeenCalledWith('./pages.csv', expect.objectContaining({
+      baseUrl: 'https://example.com',
+      csvIgnoreColumns: ['pagetype'],
+    }));
+    expect(results.totalPages).toBe(2);
+    expect(results.pagesTested).toBe(2);
+    expect(results.errors).toHaveLength(0);
+
+    expect(getA11yValidator).toHaveBeenCalledWith('home', expect.objectContaining({
+      excludeTags: [],
+      excludeRules: [],
+      includeTags: null,
+    }));
+    expect(getA11yValidator).toHaveBeenCalledWith('about-us', expect.objectContaining({
+      excludeTags: [],
+      excludeRules: [],
+      includeTags: null,
+    }));
   });
 });

@@ -12,6 +12,7 @@ node_modules/
 *.tgz
 reports/
 examples/
+coverage/
 
 reports.zip
 *.zip

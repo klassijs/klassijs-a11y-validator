@@ -2,7 +2,9 @@ const path = require('path');
 const fs = require("fs");
 
 const { getA11yValidator, getAccessibilityError, getAccessibilityTotalError, resetErrorCounts } = require('./src/accessibilityLib');
-const { crawlWebsite, isValidUrl } = require('./src/urlCrawler');
+const { crawlWebsite, isValidUrl, authenticate, isPrivatePage } = require('./src/urlCrawler');
+const { discoverPagesFromSitemap } = require('./src/sitemapDiscovery');
+const { getPagesFromFile } = require('./src/pagesFileParser');
 const { dateTime } = require('./utils/dateTime');
 
 const accessibility_lib = path.resolve(__dirname, './src/accessibilityLib.js');
@@ -72,6 +74,10 @@ async function a11yValidatorFromUrl(url, options = {}) {
     excludeRules = [],
     includeTags = null,
     maxPagesToTest = null, // Limit how many pages to test (null = test all)
+    // sitemap-first discovery for crawl-style runs
+    sitemapFirst = true,
+    sitemapUrls = null,
+    sitemapUrl = null,
   } = options;
 
   if (!isValidUrl(url)) {
@@ -89,18 +95,77 @@ async function a11yValidatorFromUrl(url, options = {}) {
   
   // Start timer for crawl duration
   const crawlStartTime = Date.now();
-  
-  // Crawl the website to discover all pages
-  const crawlResult = await crawlWebsite(url, {
-    maxPages,
-    maxDepth,
-    excludePaths,
-    auth,
-    privatePageIndicators,
-    skipPrivatePages,
-  });
 
-  // Calculate crawl duration
+  let crawlResult = null;
+  const effectiveSitemapUrls = Array.isArray(sitemapUrls)
+    ? sitemapUrls
+    : sitemapUrls
+      ? [sitemapUrls]
+      : sitemapUrl
+        ? [sitemapUrl]
+        : [];
+
+  // Sitemap-first: try discovering pages from sitemap/robots automatically.
+  if (sitemapFirst !== false) {
+    try {
+      const discoveredFromSitemap = await discoverPagesFromSitemap({
+        baseUrl: url,
+        sitemapUrls: effectiveSitemapUrls,
+      });
+
+      if (Array.isArray(discoveredFromSitemap) && discoveredFromSitemap.length > 0) {
+        const effectiveMaxPages = !maxPages || maxPages <= 0 ? Number.MAX_SAFE_INTEGER : maxPages;
+
+        const filteredUrls = discoveredFromSitemap
+          .filter((pageUrl) => {
+            if (!excludePaths || excludePaths.length === 0) return true;
+            return !excludePaths.some((pattern) => {
+              try {
+                const urlObj = new URL(pageUrl);
+                return urlObj.pathname.includes(pattern);
+              } catch (_e) {
+                return String(pageUrl).includes(pattern);
+              }
+            });
+          })
+          .slice(0, effectiveMaxPages);
+
+        if (filteredUrls.length > 0) {
+          const domain = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+          const pageMap = {};
+          const pagesByDepth = { 0: [] };
+          filteredUrls.forEach((pageUrl) => {
+            pageMap[pageUrl] = { depth: 0, parent: null, children: [], discoveredFrom: [] };
+            pagesByDepth[0].push(pageUrl);
+          });
+
+          crawlResult = {
+            urls: filteredUrls,
+            pageMap,
+            domain,
+            pagesByDepth,
+            totalPages: filteredUrls.length,
+          };
+        }
+      }
+    } catch (sitemapErr) {
+      console.warn(`Sitemap discovery failed; falling back to crawler. ${sitemapErr.message}`);
+    }
+  }
+
+  // Fall back to crawler if sitemap discovery did not yield any pages.
+  if (!crawlResult) {
+    crawlResult = await crawlWebsite(url, {
+      maxPages,
+      maxDepth,
+      excludePaths,
+      auth,
+      privatePageIndicators,
+      skipPrivatePages,
+    });
+  }
+
+  // Calculate duration for whichever discovery method ran.
   const crawlEndTime = Date.now();
   const crawlDurationMs = crawlEndTime - crawlStartTime;
   
@@ -527,6 +592,215 @@ async function a11yValidatorFromUrl(url, options = {}) {
   }
   
   console.info(`${'='.repeat(60)}\n`);
+
+  return results;
+}
+
+/**
+ * Validates accessibility for a set of explicit pages provided in a `.txt` or `.csv` file.
+ * Each line/row should contain a full URL, or a relative path (requires `options.baseUrl`).
+ *
+ * @param {string} pagesFilePath
+ * @param {Object} options
+ * @param {string|null} options.baseUrl - Required if the file contains relative paths.
+ * @param {string|string[]} options.csvIgnoreColumns - CSV columns to ignore (header name or index).
+ * @param {boolean} options.count - Whether to record total error count.
+ * @param {Object|null} options.auth - Authentication configuration for protected pages.
+ * @param {boolean} options.crawlOnly - If true, it will not run axe validation.
+ * @param {number|null} options.maxPagesToTest - Limit how many entries to actually test.
+ * @param {Array<string>} options.excludeTags
+ * @param {Array<string>} options.excludeRules
+ * @param {Array<string>|null} options.includeTags
+ */
+async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
+  const {
+    count = true,
+    baseUrl = null,
+    csvIgnoreColumns = [],
+    auth = null,
+    crawlOnly = false,
+    maxPagesToTest = null,
+    excludeTags = [],
+    excludeRules = [],
+    includeTags = null,
+  } = options;
+
+  if (!pagesFilePath) throw new Error('pagesFilePath is required');
+
+  if (!global.browser) {
+    throw new Error('Browser instance not available. Make sure browser is initialized before calling this function.');
+  }
+
+  resetErrorCounts();
+
+  const fileStartTime = Date.now();
+  const pages = getPagesFromFile(pagesFilePath, { baseUrl, csvIgnoreColumns });
+
+  const crawlEndTime = Date.now();
+  const crawlDurationMs = crawlEndTime - fileStartTime;
+
+  const formatDuration = (ms) => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const parts = [];
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+    return parts.join(' ');
+  };
+
+  const crawlDuration = formatDuration(crawlDurationMs);
+
+  if (!pages || pages.length === 0) {
+    return {
+      totalPages: 0,
+      pagesTested: 0,
+      totalErrors: 0,
+      urls: [],
+      errors: [],
+      pageMap: {},
+      domain: '',
+      testedPages: [],
+      pagesSkipped: 0,
+      pagesToTest: 0,
+      crawlOnly: !!crawlOnly,
+      crawlDuration,
+      message: 'No pages found in provided file.',
+    };
+  }
+
+  const domain = (() => {
+    try {
+      return new URL(pages[0]).hostname.replace(/^www\./, '').toLowerCase();
+    } catch (_e) {
+      return '';
+    }
+  })();
+
+  const effectiveMax = maxPagesToTest && maxPagesToTest > 0 ? Math.min(maxPagesToTest, pages.length) : pages.length;
+  const pagesSkipped = pages.length - effectiveMax;
+
+  const pageMap = {};
+  const pagesByDepth = { 0: [] };
+  pages.forEach((pageUrl) => {
+    pageMap[pageUrl] = { depth: 0, parent: null, children: [], discoveredFrom: [] };
+    pagesByDepth[0].push(pageUrl);
+  });
+
+  if (crawlOnly) {
+    return {
+      crawlOnly: true,
+      totalPages: pages.length,
+      pagesTested: 0,
+      totalErrors: 0,
+      urls: pages.map((url) => ({ url, pageName: '', errors: 0, status: 'not_tested' })),
+      errors: [],
+      pageMap,
+      domain,
+      pagesByDepth,
+      crawlDuration,
+      message: 'Page list loaded; accessibility testing skipped (crawlOnly mode).',
+    };
+  }
+
+  // Perform login once for the entire browser session, if auth is configured.
+  if (auth) {
+    await authenticate(auth);
+  }
+
+  const results = {
+    totalPages: pages.length,
+    pagesTested: 0,
+    totalErrors: 0,
+    urls: [],
+    errors: [],
+    pageMap,
+    domain,
+    testedPages: [],
+    pagesSkipped,
+    pagesToTest: effectiveMax,
+  };
+
+  for (let i = 0; i < effectiveMax; i++) {
+    const pageUrl = pages[i];
+    try {
+      await global.browser.url(pageUrl);
+
+      await global.browser.waitUntil(
+        async () => {
+          const readyState = await global.browser.execute(() => document.readyState);
+          return readyState === 'complete';
+        },
+        {
+          timeout: 10000,
+          timeoutMsg: 'Page did not load completely',
+        }
+      );
+
+      await global.browser.pause(500);
+
+      // Ensure we're in the correct tab (not the WebdriverIO Bidi tab)
+      try {
+        const windowHandles = await global.browser.getWindowHandles();
+        if (windowHandles.length > 1) {
+          const currentUrl = await global.browser.getUrl();
+          if (!currentUrl || currentUrl === pageUrl) {
+            // already in the right tab
+          } else {
+            await global.browser.switchToWindow(windowHandles[0]);
+            await global.browser.pause(200);
+          }
+        }
+      } catch (_switchErr) {
+        // ignore and continue
+      }
+
+      const urlObj = new URL(pageUrl);
+      const pageName =
+        urlObj.pathname === '/' || urlObj.pathname === ''
+          ? 'home'
+          : urlObj.pathname
+              .replace(/\//g, '_')
+              .replace(/^_|_$/g, '')
+              .substring(0, 50) || 'page';
+
+      await getA11yValidator(pageName, { excludeTags, excludeRules, includeTags });
+
+      const pageErrors = getAccessibilityError();
+      results.pagesTested++;
+      results.totalErrors += pageErrors;
+
+      const pageResult = {
+        url: pageUrl,
+        pageName,
+        errors: pageErrors,
+        status: pageErrors > 0 ? 'has_errors' : 'passed',
+      };
+
+      results.urls.push(pageResult);
+      results.testedPages.push(pageUrl);
+
+      if (pageErrors > 0) {
+        results.errors.push({ url: pageUrl, pageName, errors: pageErrors });
+      }
+    } catch (error) {
+      results.errors.push({ url: pageUrl, error: error.message, status: 'error' });
+      results.pagesTested++;
+      results.testedPages.push(pageUrl);
+    }
+  }
+
+  const totalEndTime = Date.now();
+  const totalDurationMs = totalEndTime - fileStartTime;
+  const totalDuration = formatDuration(totalDurationMs);
+
+  if (results.testedPages.length > 1) {
+    await generateComprehensiveReport(results, domain, crawlDuration, totalDuration);
+  }
+
+  await accessibilityError(count);
 
   return results;
 }
@@ -1378,5 +1652,6 @@ async function accessibilityError(count) {
 module.exports = { 
   a11yValidator,
   a11yValidatorFromUrl,
+  a11yValidatorFromPagesFile,
   generateComprehensiveReport,
 };

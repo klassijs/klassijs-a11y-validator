@@ -257,8 +257,8 @@ This mode:
    ```
 
    The `a11yValidatorFromUrl` function will:
-   - Crawl the website starting from the provided URL
-   - Discover all internal pages (respecting same-domain and depth limits)
+- Crawl the website starting from the provided URL
+- Discover internal pages using sitemap-first discovery (robots.txt sitemap entries + common sitemap locations), with crawler fallback if no sitemap URLs are found
    - Test each discovered page for accessibility issues
    - Generate individual reports for each page
    - Return a summary of all results
@@ -279,6 +279,30 @@ This mode:
 
 
 ## Configuration
+
+### Multi-Page Validation From Pages File (.txt / .csv)
+
+If you want to test a specific list of pages (instead of crawling a whole site), use `a11yValidatorFromPagesFile`.
+
+It supports:
+- `.txt`: one URL or relative path per line
+- `.csv`: URL/path in the first usable column (optionally ignore columns via `csvIgnoreColumns`)
+
+Example:
+```javascript
+const { a11yValidatorFromPagesFile } = require('klassijs-a11y-validator');
+
+// Make sure `global.browser` is initialized before calling this.
+await a11yValidatorFromPagesFile('./pages.csv', {
+  baseUrl: 'https://example.com', // required if your CSV/TXT contains relative paths
+  csvIgnoreColumns: ['pagetype'], // or ['2', '3'] / ['1'] depending on your file
+  maxPagesToTest: null, // null = test all entries
+  auth: null, // optional auth config
+  excludeTags: [],
+  excludeRules: [],
+  includeTags: null,
+});
+```
 
 ### Accessibility Rule Configuration
 
@@ -340,6 +364,10 @@ await a11yValidatorFromUrl('https://yourwebsite.com', {
         '/api',
         '/private'
     ],
+    // Sitemap-first discovery is enabled by default.
+    sitemapFirst: true,          // set to false to skip sitemap discovery
+    sitemapUrl: null,           // optional single sitemap URL
+    sitemapUrls: null,          // optional array of sitemap URLs
     maxPagesToTest: 5,           // Limit how many pages to test (default: null = test all)
                                   // Useful for quick checks: discover all pages but only test a few
     count: true                   // Include total error count in output (default: true)
