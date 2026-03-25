@@ -1925,9 +1925,13 @@ async function accessibilityError(count) {
   }
 }
 
-module.exports = { 
+module.exports = {
   a11yValidator,
   a11yValidatorFromUrl,
   a11yValidatorFromPagesFile,
   generateComprehensiveReport,
+  /** Same path scoping as crawl / sitemap-first; use if you call discoverPagesFromSitemap yourself. */
+  discoverPagesFromSitemap,
+  normalizePathPrefix,
+  isWithinPathPrefix,
 };
