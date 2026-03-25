@@ -35,6 +35,8 @@
  *   # With different browser
  *   BROWSER=safari node src/run-a11y-test.js https://example.com
  *   BROWSER=firefox node src/run-a11y-test.js https://example.com --crawl-only
+ *
+ *   # Prefer sitemap URL list before link crawl: --sitemap-first or SITEMAP_FIRST=true
  */
 
 const { remote } = require('webdriverio');
@@ -45,6 +47,11 @@ const path = require('path');
 const fs = require('fs');
 const { authenticate } = require('./urlCrawler');
 const { buildAuthConfig } = require('./auth');
+const {
+  discoverPagesFromSitemap,
+  extractSitemapUrlsFromRobotsTxt,
+  extractLocUrlsFromXml,
+} = require('./sitemapDiscovery');
 
 // Configuration for the browser
 // Option 1: Use Chrome (requires chromedriver)
@@ -187,28 +194,6 @@ const getCliValue = (args, flag) => {
   const index = args.indexOf(flag);
   if (index === -1 || index + 1 >= args.length) return null;
   return args[index + 1];
-};
-
-const fetchText = async (url) => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
-  // Avoid keeping the Node event loop alive just because the timeout exists.
-  // Jest (and some CI runners) can report "worker failed to exit gracefully" if timers aren't unref'd.
-  if (typeof timeout.unref === 'function') timeout.unref();
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'user-agent': 'klassijs-a11y-validator/1.0',
-      },
-    });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} for ${url}`);
-    }
-    return await response.text();
-  } finally {
-    clearTimeout(timeout);
-  }
 };
 
 const cleanUrlInput = (input) => {
@@ -355,110 +340,6 @@ const looksLikeUrlOrPath = (value) => {
   );
 };
 
-const extractSitemapUrlsFromRobotsTxt = (robotsTxt, baseUrl) => {
-  const lines = robotsTxt.split(/\r?\n/);
-  const urls = lines
-    .map((line) => line.trim())
-    .filter((line) => /^sitemap:/i.test(line))
-    .map((line) => line.replace(/^sitemap:\s*/i, '').trim())
-    .filter(Boolean)
-    .map((value) => normalizeUrl(value, baseUrl));
-  return [...new Set(urls)];
-};
-
-const extractLocUrlsFromXml = (xml, baseUrl) => {
-  const urls = [];
-  const locRegex = /<loc>\s*([^<]+)\s*<\/loc>/gi;
-  let match;
-  while ((match = locRegex.exec(xml)) !== null) {
-    const raw = match[1];
-    if (!raw) continue;
-    try {
-      urls.push(normalizeUrl(raw, baseUrl));
-    } catch (_error) {
-      // Skip invalid loc entries
-    }
-  }
-  return [...new Set(urls)];
-};
-
-const getHostname = (url) => new URL(url).hostname.replace(/^www\./, '').toLowerCase();
-
-const isSameHostname = (candidateUrl, baseUrl) => {
-  try {
-    const candidateHost = getHostname(candidateUrl);
-    const baseHost = getHostname(baseUrl);
-    return candidateHost === baseHost || candidateHost.endsWith(`.${baseHost}`);
-  } catch (_error) {
-    return false;
-  }
-};
-
-const discoverPagesFromSitemap = async ({ baseUrl, sitemapUrls = [] }) => {
-  if (!baseUrl) {
-    throw new Error('Base URL is required for sitemap discovery.');
-  }
-
-  const queue = [...sitemapUrls];
-  if (queue.length === 0) {
-    const robotsUrl = normalizeUrl('/robots.txt', baseUrl);
-    try {
-      const robotsTxt = await fetchText(robotsUrl);
-      const fromRobots = extractSitemapUrlsFromRobotsTxt(robotsTxt, baseUrl);
-      queue.push(...fromRobots);
-    } catch (error) {
-      console.warn(`Could not read robots.txt (${robotsUrl}): ${error.message}`);
-    }
-  }
-
-  if (queue.length === 0) {
-    // Try common sitemap locations when robots.txt doesn't provide them.
-    queue.push(
-      normalizeUrl('/sitemap.xml', baseUrl),
-      normalizeUrl('/sitemap_index.xml', baseUrl),
-      normalizeUrl('/sitemap-index.xml', baseUrl),
-      normalizeUrl('/wp-sitemap.xml', baseUrl),
-      normalizeUrl('/sitemap/sitemap-index.xml', baseUrl)
-    );
-  }
-
-  const visitedSitemaps = new Set();
-  const discoveredPages = new Set();
-
-  while (queue.length > 0) {
-    const sitemapUrl = queue.shift();
-    if (!sitemapUrl || visitedSitemaps.has(sitemapUrl)) continue;
-    visitedSitemaps.add(sitemapUrl);
-
-    try {
-      console.log(`Trying sitemap: ${sitemapUrl}`);
-      const xml = await fetchText(sitemapUrl);
-      const locUrls = extractLocUrlsFromXml(xml, baseUrl);
-      const isSitemapIndex = /<sitemapindex[\s>]/i.test(xml);
-
-      if (isSitemapIndex) {
-        locUrls.forEach((url) => {
-          if (!visitedSitemaps.has(url)) {
-            queue.push(url);
-          }
-        });
-        continue;
-      }
-
-      locUrls.forEach((pageUrl) => {
-        if (isSameHostname(pageUrl, baseUrl)) {
-          discoveredPages.add(pageUrl);
-        }
-      });
-    } catch (error) {
-      console.warn(`Could not process sitemap ${sitemapUrl}: ${error.message}`);
-    }
-  }
-
-  console.log(`Sitemap discovery complete: ${discoveredPages.size} same-domain page(s) found.`);
-  return [...discoveredPages];
-};
-
 const getPagesFromFile = (pagesFilePath, options = {}) => {
   const extension = path.extname(pagesFilePath).toLowerCase();
   const fileContent = fs.readFileSync(pagesFilePath, 'utf8');
@@ -536,6 +417,8 @@ const parseCliOptions = async () => {
   const excludeRulesArg = getCliValue(args, '--exclude-rules');
   const fromSitemap = args.includes('--from-sitemap');
   const crawlOnly = process.env.CRAWL_ONLY === 'true' || args.includes('--crawl-only');
+  const sitemapFirst =
+    process.env.SITEMAP_FIRST === 'true' || args.includes('--sitemap-first');
 
   const loginUrlArg = getCliValue(args, '--login-url');
   const usernameArg = getCliValue(args, '--username');
@@ -603,6 +486,7 @@ const parseCliOptions = async () => {
     pages,
     crawlOnly,
     fromSitemap,
+    sitemapFirst,
     authConfig,
     a11yRuleOptions: {
       includeTags: parseCommaSeparated(includeTagsArg || process.env.A11Y_INCLUDE_TAGS),
@@ -770,7 +654,9 @@ async function runAccessibilityTest() {
     };
 
     if (options.mode === 'pages') {
-      console.log('Running explicit page tests (crawl disabled)...');
+      console.log(
+        `Explicit page mode (${options.pages.length} URL(s)): --pages, --pages-file, or --from-sitemap — crawl is disabled; totalPages equals this list only.`
+      );
       if (authConfig) {
         console.log('Authenticating before explicit page tests...');
         await authenticate(authConfig);
@@ -779,79 +665,39 @@ async function runAccessibilityTest() {
       results = pageRun.results;
       executionErrors = pageRun.executionErrors;
     } else {
-      // For crawl/crawl-only modes, automatically try sitemap discovery first.
-      // If sitemap is unavailable/empty, fall back to normal link crawling.
-      let sitemapPages = [];
-      try {
-        sitemapPages = await discoverPagesFromSitemap({ baseUrl: testUrl, sitemapUrls: [] });
-      } catch (sitemapError) {
-        console.warn(`Sitemap discovery failed, falling back to crawler: ${sitemapError.message}`);
-      }
+      // Same defaults + options as a minimal consumer (only count, crawlOnly, maxPages, maxDepth,
+      // skipPrivatePages). Do not add excludePaths/privatePageIndicators here — that diverged from
+      // `require('…')` usage and changed discovery. CLI-only: auth + axe tag/rule filters.
+      const crawlOnly = options.crawlOnly;
+      const useSitemapFirst = options.sitemapFirst === true;
+      console.log(
+        `Crawl mode → a11yValidatorFromUrl (maxPages=10, maxDepth=50, sitemapFirst=${useSitemapFirst}). Same API as require('klassijs-a11y-validator').`
+      );
+      results = await a11yValidatorFromUrl(testUrl, {
+        count: true,
+        crawlOnly,
+        maxPages: 10,
+        maxDepth: 50,
+        skipPrivatePages: true,
+        sitemapFirst: useSitemapFirst,
+        auth: authConfig,
+        includeTags: a11yRuleOptions.includeTags,
+        excludeTags: a11yRuleOptions.excludeTags,
+        excludeRules: a11yRuleOptions.excludeRules,
+      });
 
-      if (sitemapPages.length > 0) {
-        console.log(`Using sitemap discovery: ${sitemapPages.length} page(s) found.`);
-        if (options.crawlOnly) {
-          results = {
-            crawlOnly: true,
-            totalPages: sitemapPages.length,
-            pagesTested: 0,
-            totalErrors: 0,
-            urls: sitemapPages.map((url) => ({
-              url,
-              pageName: '',
-              errors: 0,
-              status: 'not_tested',
-            })),
-            errors: [],
-            pageMap: {},
-            domain: getHostname(testUrl),
-            message: 'Crawl completed from sitemap discovery. Accessibility testing was skipped (crawlOnly mode).',
-          };
-        } else {
-            if (authConfig) {
-              console.log('Authenticating before sitemap-based page tests...');
-              await authenticate(authConfig);
-            }
-          const pageRun = await runPagesModeTests(sitemapPages, 'sitemap discovery');
-          results = pageRun.results;
-          executionErrors = pageRun.executionErrors;
-        }
-      } else {
-        console.log('No sitemap pages found, using normal crawler discovery.');
-        const crawlOnly = options.crawlOnly;
-        results = await a11yValidatorFromUrl(testUrl, {
-          maxPages: null,      // Set to null for unlimited (discovers ALL pages including children)
-          maxDepth: 10,        // Maximum depth to crawl (set high to find all nested pages)
-          excludePaths: [      // Exclude these paths from testing
-            '/admin',
-            '/api',
-            '/private',
-          ],
-          count: true,         // Include total error count
-          crawlOnly: crawlOnly, // Set to true to only crawl without testing
-          maxPagesToTest: null, // Limit how many pages to test (5 for testing new features, set to null to test all discovered pages)
-            auth: authConfig,
-            skipPrivatePages: false,
-            privatePageIndicators: ['Login', 'Sign in', 'Authentication required'],
-            includeTags: a11yRuleOptions.includeTags,
-            excludeTags: a11yRuleOptions.excludeTags,
-            excludeRules: a11yRuleOptions.excludeRules,
+      if (Array.isArray(results.errors)) {
+        const keptErrors = [];
+        const ignoredExecutionErrors = [];
+        results.errors.forEach((entry) => {
+          if (entry && isIgnorableExecutionError(entry.error)) {
+            ignoredExecutionErrors.push(entry);
+          } else {
+            keptErrors.push(entry);
+          }
         });
-
-        // Keep transient WebDriver/Bidi execution errors out of the accessibility issue report.
-        if (Array.isArray(results.errors)) {
-          const keptErrors = [];
-          const ignoredExecutionErrors = [];
-          results.errors.forEach((entry) => {
-            if (entry && isIgnorableExecutionError(entry.error)) {
-              ignoredExecutionErrors.push(entry);
-            } else {
-              keptErrors.push(entry);
-            }
-          });
-          results.errors = keptErrors;
-          executionErrors = ignoredExecutionErrors;
-        }
+        results.errors = keptErrors;
+        executionErrors = ignoredExecutionErrors;
       }
     }
 
@@ -954,10 +800,8 @@ module.exports = {
     looksLikeUrlOrPath,
     getPagesFromFile,
     parseCliOptions,
-    fetchText,
     extractSitemapUrlsFromRobotsTxt,
     extractLocUrlsFromXml,
-    isSameHostname,
     discoverPagesFromSitemap,
   },
 };

@@ -464,8 +464,8 @@ await a11yValidatorFromUrl('https://yourwebsite.com', {
         '/api',
         '/private'
     ],
-    // Sitemap-first discovery is enabled by default.
-    sitemapFirst: true,          // set to false to skip sitemap discovery
+    // Link crawl runs first by default; set true to load URLs from sitemap/robots before crawling.
+    sitemapFirst: false,         // set to true to use sitemap discovery first (capped by maxPages)
     sitemapUrl: null,           // optional single sitemap URL
     sitemapUrls: null,          // optional array of sitemap URLs
     maxPagesToTest: 5,           // Limit how many pages to test (default: null = test all)

@@ -220,6 +220,7 @@ async function a11yValidator(pageName, countOrOptions = false, options = {}) {
  *   If not provided, defaults to all WCAG 2.0/2.1/2.2 Level A and AA plus best-practice
  * @param {number|null} options.maxPagesToTest - Maximum number of pages to actually test (default: null = test all discovered pages)
  *   Useful for quick checks: discover all pages but only test a subset (e.g., test only 5 pages out of 83 discovered)
+ * @param {boolean} [options.sitemapFirst=false] - If true, discover URLs from sitemap/robots before link crawling (capped by maxPages). Default is link crawl first so maxPages applies to discovered links.
  * @returns {Promise<Object>} - Summary of validation results or crawl results if crawlOnly is true
  */
 async function a11yValidatorFromUrl(url, options = {}) {
@@ -236,8 +237,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
     excludeRules = [],
     includeTags = null,
     maxPagesToTest = null, // Limit how many pages to test (null = test all)
-    // sitemap-first discovery for crawl-style runs
-    sitemapFirst = true,
+    sitemapFirst = false,
     sitemapUrls = null,
     sitemapUrl = null,
   } = options;
@@ -267,8 +267,8 @@ async function a11yValidatorFromUrl(url, options = {}) {
         ? [sitemapUrl]
         : [];
 
-  // Sitemap-first: try discovering pages from sitemap/robots automatically.
-  if (sitemapFirst !== false) {
+  // Optional sitemap-first: load URL list from sitemap/robots before link crawling.
+  if (sitemapFirst) {
     try {
       const discoveredFromSitemap = await discoverPagesFromSitemap({
         baseUrl: url,
