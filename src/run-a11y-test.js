@@ -246,8 +246,15 @@ const describeHiddenChars = (value) => {
 
 const normalizeUrl = (input, baseUrl) => {
   const cleaned = cleanUrlInput(input);
+  const looksLikeHost =
+    /^(localhost|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:\/.*)?$/i.test(cleaned) ||
+    /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:\/.*)?$/i.test(cleaned);
+  const withScheme =
+    cleaned && !/^[a-z][a-z0-9+.-]*:\/\//i.test(cleaned) && looksLikeHost
+      ? `https://${cleaned}`
+      : cleaned;
   try {
-    return new URL(cleaned, baseUrl).href;
+    return new URL(withScheme, baseUrl).href;
   } catch (error) {
     const hidden = describeHiddenChars(input) || describeHiddenChars(cleaned);
     if (hidden) {

@@ -34,7 +34,8 @@ describe('urlCrawler utility', () => {
     test('should return false for invalid URLs', () => {
       expect(isValidUrl('not-a-url')).toBe(false);
       expect(isValidUrl('')).toBe(false);
-      expect(isValidUrl('example.com')).toBe(false);
+      expect(isValidUrl('example.com')).toBe(true);
+      expect(isValidUrl('example.com/groveart')).toBe(true);
       expect(isValidUrl('ftp://example.com')).toBe(true); // Technically valid URL
     });
   });

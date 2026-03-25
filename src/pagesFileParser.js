@@ -19,7 +19,20 @@ const cleanUrlInput = (input) => {
 
 const normalizeUrl = (input, baseUrl) => {
   const cleaned = cleanUrlInput(input);
-  return new URL(cleaned, baseUrl).href;
+  const looksLikeHost =
+    /^(localhost|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:\/.*)?$/i.test(cleaned) ||
+    /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:\/.*)?$/i.test(cleaned);
+  const withScheme =
+    cleaned && !/^[a-z][a-z0-9+.-]*:\/\//i.test(cleaned) && looksLikeHost
+      ? `https://${cleaned}`
+      : cleaned;
+  const base = (() => {
+    if (!baseUrl) return baseUrl;
+    const b = cleanUrlInput(baseUrl);
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(b)) return b;
+    return `https://${b}`;
+  })();
+  return new URL(withScheme, base).href;
 };
 
 const looksLikeUrlOrPath = (value) => {

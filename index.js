@@ -1252,6 +1252,10 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
       : Array.isArray(summaryData.incompleteByRule)
         ? summaryData.incompleteByRule
         : [];
+  const testedPages =
+    Array.isArray(summaryData.allPages) && summaryData.allPages.length > 0
+      ? summaryData.allPages
+      : [];
   
   let html = `<!DOCTYPE html>
 <html lang="en">
@@ -1410,6 +1414,40 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
   
   const siteWideCount = sortedViolations.filter(v => v.pages.length > totalPages * 0.5).length;
   const pageSpecificCount = sortedViolations.length - siteWideCount;
+
+  if (testedPages.length > 0) {
+    html += `
+        <div class="section-controls">
+            <button onclick="window.toggleAll('allPagesSection', true)">Expand All</button>
+            <button onclick="window.toggleAll('allPagesSection', false)">Collapse All</button>
+        </div>
+        <h2 class="collapsible-header" onclick="window.toggleSection('allPagesSection')" style="cursor: pointer;">
+            <span><span class="collapse-icon collapsed" id="allPagesIcon">▼</span>📄 All Pages Tested</span>
+            <span style="font-size: 0.7em; color: #7f8c8d;">(${testedPages.length} pages)</span>
+        </h2>
+        <div id="allPagesSection" class="collapsible-content collapsed" style="padding: 20px 0;">
+            <p style="margin-bottom: 12px;">Complete list of pages included in this run.</p>
+            <div class="pages-list">
+                ${testedPages.map((page, index) => {
+                  const pageUrl = page && page.url ? String(page.url) : '';
+                  const localReportHref = page && page.localReportHref ? String(page.localReportHref) : '';
+                  const displayText = pageUrl || (page && page.pageName ? String(page.pageName) : `Page ${index + 1}`);
+                  const reportLink = localReportHref
+                    ? `<a href="${esc(localReportHref)}" target="_blank" rel="noopener noreferrer" class="instances-count instances-count-link" title="Open full page report">view report</a>`
+                    : '';
+                  const pageAnchor = pageUrl
+                    ? `<a href="${esc(pageUrl)}" target="_blank" rel="noopener noreferrer" class="page-url">${esc(displayText)}</a>`
+                    : `<span class="page-url">${esc(displayText)}</span>`;
+                  return `
+                        <div class="page-item">
+                            <span style="margin-right: 8px; color: #666;">${index + 1}.</span>
+                            ${pageAnchor}
+                            ${reportLink}
+                        </div>`;
+                }).join('')}
+            </div>
+        </div>`;
+  }
 
   // Site-wide issues section
   if (siteWideViolations.length > 0) {

@@ -40,6 +40,54 @@ function normalizeUrl(url) {
   }
 }
 
+function normalizeInputUrl(url) {
+  if (url === null || url === undefined) return url;
+  const raw = String(url).trim();
+  if (!raw) return raw;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return raw;
+  const looksLikeHost =
+    /^(localhost|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:\/.*)?$/i.test(raw) ||
+    /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:\/.*)?$/i.test(raw);
+  return looksLikeHost ? `https://${raw}` : raw;
+}
+
+function normalizePathPrefix(pathname) {
+  if (!pathname || pathname === '/') return '/';
+  let p = String(pathname).trim();
+  if (!p.startsWith('/')) p = `/${p}`;
+  // Keep '/' as the root sentinel, normalize '/x/' => '/x'
+  if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
+  return p;
+}
+
+function isWithinPathPrefix(url, pathPrefix) {
+  if (!url) return false;
+  if (!pathPrefix || pathPrefix === '/') return true;
+  try {
+    const pathname = normalizePathPrefix(new URL(url).pathname);
+    return pathname === pathPrefix || pathname.startsWith(`${pathPrefix}/`);
+  } catch (_e) {
+    return false;
+  }
+}
+
+function isHeadlessBrowserSession() {
+  try {
+    const caps = global.browser && global.browser.capabilities;
+    if (!caps || typeof caps !== 'object') return false;
+    const chromeArgs = caps['goog:chromeOptions'] && Array.isArray(caps['goog:chromeOptions'].args)
+      ? caps['goog:chromeOptions'].args
+      : [];
+    if (chromeArgs.some((arg) => String(arg).toLowerCase().startsWith('--headless'))) {
+      return true;
+    }
+    if (typeof caps.headless === 'boolean') return caps.headless;
+    return false;
+  } catch (_e) {
+    return false;
+  }
+}
+
 /**
  * Max time (ms) to poll until same-domain links exist (headless often paints nav late).
  * Set A11Y_LINK_POLL_MS=0 to disable. Set to a number to override all depths.
@@ -546,9 +594,21 @@ async function crawlWebsite(baseUrl, options = {}) {
     throw new Error('Browser instance not available. Make sure browser is initialized.');
   }
 
+  const resolvedBaseUrl = normalizeInputUrl(baseUrl);
+  const isHeadless = isHeadlessBrowserSession();
   // Extract base domain to ensure we only crawl pages from the same domain
-  const baseDomain = getBaseDomain(baseUrl);
+  const baseDomain = getBaseDomain(resolvedBaseUrl);
+  const basePathPrefix = (() => {
+    try {
+      return normalizePathPrefix(new URL(resolvedBaseUrl).pathname);
+    } catch (_e) {
+      return '/';
+    }
+  })();
   console.info(`Domain restriction: ${baseDomain}`);
+  if (basePathPrefix !== '/') {
+    console.info(`Path restriction: ${basePathPrefix} (subpath crawl mode)`);
+  }
 
   // Perform authentication if provided
   if (auth) {
@@ -560,7 +620,7 @@ async function crawlWebsite(baseUrl, options = {}) {
 
   const discoveredUrls = new Set();
   // Normalize the base URL before starting
-  const normalizedBaseUrl = normalizeUrl(baseUrl);
+  const normalizedBaseUrl = normalizeUrl(resolvedBaseUrl);
   const urlsToVisit = [{ url: normalizedBaseUrl, depth: 0, parent: null }];
   const visitedUrls = new Set();
   
@@ -571,7 +631,7 @@ async function crawlWebsite(baseUrl, options = {}) {
   const isUnlimited = !maxPages || maxPages <= 0;
   const effectiveMaxPages = isUnlimited ? Number.MAX_SAFE_INTEGER : maxPages;
 
-  console.info(`Starting crawl from: ${baseUrl}`);
+  console.info(`Starting crawl from: ${resolvedBaseUrl}`);
   if (isUnlimited) {
     console.info(`Max pages: UNLIMITED (will discover all pages)`);
   } else {
@@ -579,6 +639,9 @@ async function crawlWebsite(baseUrl, options = {}) {
   }
   console.info(`Max depth: ${maxDepth}`);
   console.info(`Domain: ${baseDomain} (only pages from this domain will be included)`);
+  if (basePathPrefix !== '/') {
+    console.info(`Path: ${basePathPrefix} (only pages under this path will be included)`);
+  }
   if (auth) {
     console.info('Authentication enabled');
   }
@@ -586,10 +649,11 @@ async function crawlWebsite(baseUrl, options = {}) {
   while (urlsToVisit.length > 0 && discoveredUrls.size < effectiveMaxPages) {
     const { url, depth, parent } = urlsToVisit.shift();
     
-    // Add a small delay between page navigations to avoid overwhelming the browser
-    // This helps prevent browser context loss
+    // Add a small pacing delay between page navigations.
+    // Headless needs more time for SPA/link discovery; headed can use a smaller delay.
     if (visitedUrls.size > 0) {
-      await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay
+      const navDelayMs = isHeadless ? 500 : 200;
+      await new Promise(resolve => setTimeout(resolve, navDelayMs));
     }
     
     // Normalize URL before checking
@@ -703,12 +767,13 @@ async function crawlWebsite(baseUrl, options = {}) {
         continue;
       }
 
-      // Brief pause after load so headless can match headed timing (disable: A11Y_POST_LOAD_DELAY_MS=0).
+      // Brief pause after load for SPA reliability.
+      // Default: 1200ms in headless, 300ms in visible mode (override with A11Y_POST_LOAD_DELAY_MS).
       const rawPost = process.env.A11Y_POST_LOAD_DELAY_MS;
-      let postLoadDelayMs = 1200;
+      let postLoadDelayMs = isHeadless ? 1200 : 300;
       if (rawPost !== undefined && rawPost !== '') {
         const n = Number.parseInt(rawPost, 10);
-        postLoadDelayMs = Number.isFinite(n) ? Math.max(0, n) : 1200;
+        postLoadDelayMs = Number.isFinite(n) ? Math.max(0, n) : (isHeadless ? 1200 : 300);
       }
       if (postLoadDelayMs > 0 && typeof global.browser.pause === 'function') {
         await global.browser.pause(postLoadDelayMs);
@@ -724,10 +789,36 @@ async function crawlWebsite(baseUrl, options = {}) {
         }
       }
 
-      // CRITICAL: Final validation before adding - ensure it's from the same domain
+      // If navigation/auth redirects land on a different host, skip testing that page.
+      // This prevents auth/login redirects (e.g. external IDP login) from polluting the crawl.
+      try {
+        const actualUrl = await global.browser.getUrl();
+        if (actualUrl && /^https?:\/\//i.test(String(actualUrl))) {
+          if (!isSameDomain(actualUrl, baseDomain)) {
+            console.warn(`  ⚠️  Skipping redirected external URL: ${actualUrl}`);
+            visitedUrls.add(normalizedUrl);
+            continue;
+          }
+          if (!isWithinPathPrefix(actualUrl, basePathPrefix)) {
+            console.info(`  ↳ Skipping redirected out-of-scope path: ${actualUrl}`);
+            visitedUrls.add(normalizedUrl);
+            continue;
+          }
+        }
+      } catch (_e) {
+        // If we can't read the URL, fall back to normalizedUrl checks below.
+      }
+
+      // CRITICAL: Final validation before adding - ensure it’s from the same domain
       if (!isSameDomain(normalizedUrl, baseDomain)) {
         console.warn(`  ⚠️  Skipping external URL: ${normalizedUrl}`);
         visitedUrls.add(normalizedUrl); // Mark as visited to avoid retrying
+        continue;
+      }
+
+      if (!isWithinPathPrefix(normalizedUrl, basePathPrefix)) {
+        console.info(`  ↳ Skipping out-of-scope path: ${normalizedUrl}`);
+        visitedUrls.add(normalizedUrl);
         continue;
       }
       
@@ -828,6 +919,10 @@ async function crawlWebsite(baseUrl, options = {}) {
           if (!normalizedLink || !isSameDomain(normalizedLink, baseDomain)) {
             linksSkipped++;
             continue; // Skip external links or invalid URLs
+          }
+          if (!isWithinPathPrefix(normalizedLink, basePathPrefix)) {
+            linksSkipped++;
+            continue; // Skip links outside the base path subtree
           }
           
           // Skip if already visited
@@ -984,7 +1079,12 @@ async function crawlWebsite(baseUrl, options = {}) {
       console.warn(`⚠️  External URL found in results (should not happen): ${url}`);
       return;
     }
-    
+
+    // Final path-prefix check (subpath crawl boundary)
+    if (!isWithinPathPrefix(url, basePathPrefix)) {
+      return;
+    }
+
     // Check for duplicates (shouldn't happen due to Set, but verify)
     if (validatedUrls.includes(url)) {
       duplicateUrls.push(url);
@@ -1030,7 +1130,7 @@ async function crawlWebsite(baseUrl, options = {}) {
  */
 function isValidUrl(url) {
   try {
-    new URL(url);
+    new URL(normalizeInputUrl(url));
     return true;
   } catch (e) {
     return false;
