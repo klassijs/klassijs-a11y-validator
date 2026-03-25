@@ -4,16 +4,21 @@ describe('urlCrawler utility', () => {
   let mockBrowser;
 
   beforeEach(() => {
+    process.env.A11Y_LINK_POLL_MS = '0';
+    process.env.A11Y_POST_LOAD_DELAY_MS = '0';
     mockBrowser = {
       getUrl: jest.fn(),
       url: jest.fn(),
       execute: jest.fn(),
       waitUntil: jest.fn(),
+      pause: jest.fn().mockResolvedValue(undefined),
     };
     global.browser = mockBrowser;
   });
 
   afterEach(() => {
+    delete process.env.A11Y_LINK_POLL_MS;
+    delete process.env.A11Y_POST_LOAD_DELAY_MS;
     delete global.browser;
     jest.clearAllMocks();
   });
@@ -29,7 +34,8 @@ describe('urlCrawler utility', () => {
     test('should return false for invalid URLs', () => {
       expect(isValidUrl('not-a-url')).toBe(false);
       expect(isValidUrl('')).toBe(false);
-      expect(isValidUrl('example.com')).toBe(false);
+      expect(isValidUrl('example.com')).toBe(true);
+      expect(isValidUrl('example.com/groveart')).toBe(true);
       expect(isValidUrl('ftp://example.com')).toBe(true); // Technically valid URL
     });
   });

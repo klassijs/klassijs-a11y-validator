@@ -35,6 +35,13 @@
  *   # With different browser
  *   BROWSER=safari node src/run-a11y-test.js https://example.com
  *   BROWSER=firefox node src/run-a11y-test.js https://example.com --crawl-only
+ *
+ *   # Prefer sitemap URL list before link crawl: --sitemap-first or SITEMAP_FIRST=true
+ *
+ *   # Override crawl size: A11Y_MAX_PAGES=25 node src/run-a11y-test.js https://example.com
+ *
+ *   # Browser: same locally and in CI — explicit --pages / file / sitemap → headless; crawl from URL → visible.
+ *   # Override: HEADLESS=true|false, VISIBLE_BROWSER=1. In CI, crawl may need: xvfb-run node src/run-a11y-test.js …
  */
 
 const { remote } = require('webdriverio');
@@ -45,27 +52,16 @@ const path = require('path');
 const fs = require('fs');
 const { authenticate } = require('./urlCrawler');
 const { buildAuthConfig } = require('./auth');
+const {
+  discoverPagesFromSitemap,
+  extractSitemapUrlsFromRobotsTxt,
+  extractLocUrlsFromXml,
+} = require('./sitemapDiscovery');
 
 // Configuration for the browser
 // Option 1: Use Chrome (requires chromedriver)
 // Option 2: Use Safari (works on macOS without additional drivers)
 // Option 3: Use Firefox (requires geckodriver)
-// Debug: Log environment differences between IDE and terminal
-// This helps identify why it works in IDE but not in terminal
-const debugEnv = process.env.DEBUG_ENV === 'true';
-if (debugEnv) {
-  console.log('\n🔍 Environment Debug Info:');
-  console.log(`  User: ${os.userInfo().username}`);
-  console.log(`  Home: ${os.homedir()}`);
-  console.log(`  Original TMPDIR: ${process.env.TMPDIR || '(not set)'}`);
-  console.log(`  Original TEMP: ${process.env.TEMP || '(not set)'}`);
-  console.log(`  Original TMP: ${process.env.TMP || '(not set)'}`);
-  console.log(`  System tempdir: ${os.tmpdir()}`);
-  console.log(`  Process PID: ${process.pid}`);
-  console.log(`  Node version: ${process.version}`);
-  console.log(`  Platform: ${process.platform}`);
-  console.log('');
-}
 
 // Set custom cache directory if provided (fixes permission issues)
 // WebdriverIO uses TMPDIR or creates cache in system temp
@@ -82,9 +78,6 @@ if (process.env.CACHE_DIR) {
 try {
   if (!fs.existsSync(cacheDir)) {
     fs.mkdirSync(cacheDir, { recursive: true, mode: 0o755 });
-    if (debugEnv) {
-      console.log(`✅ Created cache directory: ${cacheDir}`);
-    }
   }
   
   // Test write permissions
@@ -95,78 +88,61 @@ try {
   // Set environment variables that WebdriverIO uses for cache directory
   // WebdriverIO's @wdio/utils uses os.tmpdir() which checks TMPDIR, TEMP, or TMP
   // IMPORTANT: Set these BEFORE any WebdriverIO code runs
-  const originalTmpdir = process.env.TMPDIR;
   process.env.TMPDIR = cacheDir;
   process.env.TEMP = cacheDir;
   process.env.TMP = cacheDir;
-  
+
   // Also set the specific cache directory env var if WebdriverIO supports it
   process.env.WEBDRIVER_CACHE_DIR = cacheDir;
-  
-  if (debugEnv) {
-    console.log(`  New TMPDIR: ${process.env.TMPDIR}`);
-    console.log(`  New TEMP: ${process.env.TEMP}`);
-    console.log(`  New TMP: ${process.env.TMP}`);
-    console.log(`  os.tmpdir() now returns: ${os.tmpdir()}`);
-    console.log('');
-  }
-  
-  console.log(`Using cache directory: ${cacheDir}`);
-  if (originalTmpdir && originalTmpdir !== cacheDir) {
-    console.log(`⚠️  Note: Overrode TMPDIR from "${originalTmpdir}" to "${cacheDir}"`);
-    console.log(`   This is why it might work in IDE (different TMPDIR) but not in terminal.`);
-  }
 } catch (err) {
   console.error(`❌ Error: Could not create/access cache directory ${cacheDir}: ${err.message}`);
   console.error('Please check permissions or set CACHE_DIR to a writable directory.');
-  if (debugEnv) {
-    console.error(`\nDebug info:`);
-    console.error(`  Directory: ${cacheDir}`);
-    console.error(`  Exists: ${fs.existsSync(cacheDir)}`);
-    try {
-      const stats = fs.statSync(cacheDir);
-      console.error(`  Mode: ${stats.mode.toString(8)}`);
-      console.error(`  UID: ${stats.uid}, GID: ${stats.gid}`);
-    } catch (e) {
-      console.error(`  Cannot stat: ${e.message}`);
-    }
-  }
   process.exit(1);
 }
 
-// Configure browser options
-// Note: If you have @wdio/chromedriver-service installed, you can use the services config
-// Otherwise, WebdriverIO will try to download chromedriver automatically
-const browserOptions = {
-  capabilities: {
-    browserName: process.env.BROWSER || 'chrome', // 'chrome', 'firefox', 'safari'
-    'goog:chromeOptions': {
-      args: ['--headless', '--no-sandbox', '--disable-dev-shm-usage'], // Remove '--headless' to see the browser
+// Browser: explicit pages / URL list → headless; crawl-from-start-URL → visible (same in CI and locally).
+// Override: HEADLESS=true|false, VISIBLE_BROWSER=1. CI does not change defaults; use xvfb-run in CI if crawl needs a display.
+function resolveHeadlessChrome(mode) {
+  if (process.env.VISIBLE_BROWSER === '1') return false;
+  if (process.env.HEADLESS === 'false' || process.env.HEADLESS === '0') return false;
+  if (process.env.HEADLESS === 'true' || process.env.HEADLESS === '1') return true;
+  return mode === 'pages';
+}
+
+function buildBrowserOptions(headlessChrome) {
+  const chromeArgs = ['--no-sandbox', '--disable-dev-shm-usage'];
+  if (headlessChrome) {
+    chromeArgs.unshift('--window-size=1920,1080');
+    chromeArgs.unshift('--headless=new');
+  }
+  return {
+    capabilities: {
+      browserName: process.env.BROWSER || 'chrome',
+      'goog:chromeOptions': {
+        args: chromeArgs,
+      },
     },
-  },
-  // Try to use chromedriver service with custom cache directory if available
-  // This requires @wdio/chromedriver-service to be installed
-  // If not installed, WebdriverIO will fall back to auto-download (which should use TMPDIR)
-  services: (process.env.BROWSER === 'chrome' || !process.env.BROWSER) ? 
-    (() => {
-      try {
-        require.resolve('@wdio/chromedriver-service');
-        return [['chromedriver', { cacheDir: cacheDir }]];
-      } catch (e) {
-        // Service not installed, WebdriverIO will use TMPDIR for cache
-        return undefined;
-      }
-    })() : undefined,
-  logLevel: 'warn', // Reduce log noise
-  connectionRetryTimeout: 120000,
-  connectionRetryCount: 3,
-};
+    services:
+      process.env.BROWSER === 'chrome' || !process.env.BROWSER
+        ? (() => {
+            try {
+              require.resolve('@wdio/chromedriver-service');
+              return [['chromedriver', { cacheDir: cacheDir }]];
+            } catch (e) {
+              return undefined;
+            }
+          })()
+        : undefined,
+    logLevel: 'warn',
+    connectionRetryTimeout: 120000,
+    connectionRetryCount: 3,
+  };
+}
 
 // Configuration for paths and environment
 // These are required by the accessibility library
-const setupGlobals = () => {
-  // Set browser name (used in report paths)
-  global.browserName = browserOptions.capabilities.browserName || 'chrome';
+const setupGlobals = (browserName = 'chrome') => {
+  global.browserName = browserName;
   astellen.set('BROWSER_NAME', global.browserName);
 
   // Set environment name (used in report paths)
@@ -187,28 +163,6 @@ const getCliValue = (args, flag) => {
   const index = args.indexOf(flag);
   if (index === -1 || index + 1 >= args.length) return null;
   return args[index + 1];
-};
-
-const fetchText = async (url) => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
-  // Avoid keeping the Node event loop alive just because the timeout exists.
-  // Jest (and some CI runners) can report "worker failed to exit gracefully" if timers aren't unref'd.
-  if (typeof timeout.unref === 'function') timeout.unref();
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'user-agent': 'klassijs-a11y-validator/1.0',
-      },
-    });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} for ${url}`);
-    }
-    return await response.text();
-  } finally {
-    clearTimeout(timeout);
-  }
 };
 
 const cleanUrlInput = (input) => {
@@ -246,8 +200,15 @@ const describeHiddenChars = (value) => {
 
 const normalizeUrl = (input, baseUrl) => {
   const cleaned = cleanUrlInput(input);
+  const looksLikeHost =
+    /^(localhost|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:\/.*)?$/i.test(cleaned) ||
+    /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:\/.*)?$/i.test(cleaned);
+  const withScheme =
+    cleaned && !/^[a-z][a-z0-9+.-]*:\/\//i.test(cleaned) && looksLikeHost
+      ? `https://${cleaned}`
+      : cleaned;
   try {
-    return new URL(cleaned, baseUrl).href;
+    return new URL(withScheme, baseUrl).href;
   } catch (error) {
     const hidden = describeHiddenChars(input) || describeHiddenChars(cleaned);
     if (hidden) {
@@ -325,6 +286,14 @@ const parseCsvIgnoreColumns = (value) => {
     .filter(Boolean);
 };
 
+const parseCommaSeparated = (value) => {
+  if (!value) return [];
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
 const isIgnorableExecutionError = (message) => {
   if (!message) return false;
   const normalized = String(message).toLowerCase();
@@ -345,110 +314,6 @@ const looksLikeUrlOrPath = (value) => {
     trimmed.startsWith('https://') ||
     trimmed.startsWith('/')
   );
-};
-
-const extractSitemapUrlsFromRobotsTxt = (robotsTxt, baseUrl) => {
-  const lines = robotsTxt.split(/\r?\n/);
-  const urls = lines
-    .map((line) => line.trim())
-    .filter((line) => /^sitemap:/i.test(line))
-    .map((line) => line.replace(/^sitemap:\s*/i, '').trim())
-    .filter(Boolean)
-    .map((value) => normalizeUrl(value, baseUrl));
-  return [...new Set(urls)];
-};
-
-const extractLocUrlsFromXml = (xml, baseUrl) => {
-  const urls = [];
-  const locRegex = /<loc>\s*([^<]+)\s*<\/loc>/gi;
-  let match;
-  while ((match = locRegex.exec(xml)) !== null) {
-    const raw = match[1];
-    if (!raw) continue;
-    try {
-      urls.push(normalizeUrl(raw, baseUrl));
-    } catch (_error) {
-      // Skip invalid loc entries
-    }
-  }
-  return [...new Set(urls)];
-};
-
-const getHostname = (url) => new URL(url).hostname.replace(/^www\./, '').toLowerCase();
-
-const isSameHostname = (candidateUrl, baseUrl) => {
-  try {
-    const candidateHost = getHostname(candidateUrl);
-    const baseHost = getHostname(baseUrl);
-    return candidateHost === baseHost || candidateHost.endsWith(`.${baseHost}`);
-  } catch (_error) {
-    return false;
-  }
-};
-
-const discoverPagesFromSitemap = async ({ baseUrl, sitemapUrls = [] }) => {
-  if (!baseUrl) {
-    throw new Error('Base URL is required for sitemap discovery.');
-  }
-
-  const queue = [...sitemapUrls];
-  if (queue.length === 0) {
-    const robotsUrl = normalizeUrl('/robots.txt', baseUrl);
-    try {
-      const robotsTxt = await fetchText(robotsUrl);
-      const fromRobots = extractSitemapUrlsFromRobotsTxt(robotsTxt, baseUrl);
-      queue.push(...fromRobots);
-    } catch (error) {
-      console.warn(`Could not read robots.txt (${robotsUrl}): ${error.message}`);
-    }
-  }
-
-  if (queue.length === 0) {
-    // Try common sitemap locations when robots.txt doesn't provide them.
-    queue.push(
-      normalizeUrl('/sitemap.xml', baseUrl),
-      normalizeUrl('/sitemap_index.xml', baseUrl),
-      normalizeUrl('/sitemap-index.xml', baseUrl),
-      normalizeUrl('/wp-sitemap.xml', baseUrl),
-      normalizeUrl('/sitemap/sitemap-index.xml', baseUrl)
-    );
-  }
-
-  const visitedSitemaps = new Set();
-  const discoveredPages = new Set();
-
-  while (queue.length > 0) {
-    const sitemapUrl = queue.shift();
-    if (!sitemapUrl || visitedSitemaps.has(sitemapUrl)) continue;
-    visitedSitemaps.add(sitemapUrl);
-
-    try {
-      console.log(`Trying sitemap: ${sitemapUrl}`);
-      const xml = await fetchText(sitemapUrl);
-      const locUrls = extractLocUrlsFromXml(xml, baseUrl);
-      const isSitemapIndex = /<sitemapindex[\s>]/i.test(xml);
-
-      if (isSitemapIndex) {
-        locUrls.forEach((url) => {
-          if (!visitedSitemaps.has(url)) {
-            queue.push(url);
-          }
-        });
-        continue;
-      }
-
-      locUrls.forEach((pageUrl) => {
-        if (isSameHostname(pageUrl, baseUrl)) {
-          discoveredPages.add(pageUrl);
-        }
-      });
-    } catch (error) {
-      console.warn(`Could not process sitemap ${sitemapUrl}: ${error.message}`);
-    }
-  }
-
-  console.log(`Sitemap discovery complete: ${discoveredPages.size} same-domain page(s) found.`);
-  return [...discoveredPages];
 };
 
 const getPagesFromFile = (pagesFilePath, options = {}) => {
@@ -523,8 +388,13 @@ const parseCliOptions = async () => {
   const pagesFileArg = getCliValue(args, '--pages-file');
   const sitemapUrlArg = getCliValue(args, '--sitemap-url');
   const csvIgnoreColumnsArg = getCliValue(args, '--csv-ignore-columns');
+  const includeTagsArg = getCliValue(args, '--include-tags');
+  const excludeTagsArg = getCliValue(args, '--exclude-tags');
+  const excludeRulesArg = getCliValue(args, '--exclude-rules');
   const fromSitemap = args.includes('--from-sitemap');
   const crawlOnly = process.env.CRAWL_ONLY === 'true' || args.includes('--crawl-only');
+  const sitemapFirst =
+    process.env.SITEMAP_FIRST === 'true' || args.includes('--sitemap-first');
 
   const loginUrlArg = getCliValue(args, '--login-url');
   const usernameArg = getCliValue(args, '--username');
@@ -592,7 +462,13 @@ const parseCliOptions = async () => {
     pages,
     crawlOnly,
     fromSitemap,
+    sitemapFirst,
     authConfig,
+    a11yRuleOptions: {
+      includeTags: parseCommaSeparated(includeTagsArg || process.env.A11Y_INCLUDE_TAGS),
+      excludeTags: parseCommaSeparated(excludeTagsArg || process.env.A11Y_EXCLUDE_TAGS),
+      excludeRules: parseCommaSeparated(excludeRulesArg || process.env.A11Y_EXCLUDE_RULES),
+    },
     mode: pages.length > 0 ? 'pages' : 'crawl',
   };
 };
@@ -601,6 +477,7 @@ async function runAccessibilityTest() {
   const options = await parseCliOptions();
   const testUrl = options.baseUrl;
   const authConfig = options.authConfig;
+  const a11yRuleOptions = options.a11yRuleOptions || {};
 
   if (options.mode === 'crawl' && !testUrl) {
     console.error('❌ Missing URL.');
@@ -628,14 +505,25 @@ async function runAccessibilityTest() {
 
   let browser;
 
+  const headlessChrome = resolveHeadlessChrome(options.mode);
+  const browserOptions = buildBrowserOptions(headlessChrome);
+
   try {
-    // Setup global variables required by the validator
-    setupGlobals();
+    setupGlobals(browserOptions.capabilities.browserName || 'chrome');
 
     // Initialize the browser
     console.log('Initializing browser...');
     console.log(`Using browser: ${browserOptions.capabilities.browserName}`);
-    
+    const isChrome = !process.env.BROWSER || process.env.BROWSER === 'chrome';
+    if (isChrome) {
+      const modeLabel = options.mode === 'pages' ? 'explicit URL list' : 'crawl from start URL';
+      console.log(
+        headlessChrome
+          ? `Chrome: headless (--headless=new) — ${modeLabel}`
+          : `Chrome: visible window — ${modeLabel}`
+      );
+    }
+
     try {
       browser = await remote(browserOptions);
       global.browser = browser;
@@ -697,7 +585,7 @@ async function runAccessibilityTest() {
         try {
           await browser.url(pageUrl);
           const reportName = sanitizePageName(pageUrl);
-          await a11yValidator(reportName, true);
+          await a11yValidator(reportName, true, a11yRuleOptions);
 
           // Track per-page and total errors (if available)
           const perPageErrors =
@@ -737,9 +625,8 @@ async function runAccessibilityTest() {
         errors: [...pagesWithA11yIssues, ...pageErrors],
       };
 
-      // Match crawl+test behavior: generate one consolidated summary report
-      // when multiple explicit pages are tested.
-      if (pagesToTest.length > 1) {
+      // Match crawl+test behavior: generate one consolidated summary whenever at least one page was tested.
+      if (pagesToTest.length >= 1) {
         const firstUrl = pagesToTest[0];
         const domain = new URL(firstUrl).hostname.replace(/^www\./, '');
         const totalDurationMs = Date.now() - testStartTime;
@@ -753,7 +640,9 @@ async function runAccessibilityTest() {
     };
 
     if (options.mode === 'pages') {
-      console.log('Running explicit page tests (crawl disabled)...');
+      console.log(
+        `Explicit page mode (${options.pages.length} URL(s)): --pages, --pages-file, or --from-sitemap — crawl is disabled; totalPages equals this list only.`
+      );
       if (authConfig) {
         console.log('Authenticating before explicit page tests...');
         await authenticate(authConfig);
@@ -762,91 +651,63 @@ async function runAccessibilityTest() {
       results = pageRun.results;
       executionErrors = pageRun.executionErrors;
     } else {
-      // For crawl/crawl-only modes, automatically try sitemap discovery first.
-      // If sitemap is unavailable/empty, fall back to normal link crawling.
-      let sitemapPages = [];
-      try {
-        sitemapPages = await discoverPagesFromSitemap({ baseUrl: testUrl, sitemapUrls: [] });
-      } catch (sitemapError) {
-        console.warn(`Sitemap discovery failed, falling back to crawler: ${sitemapError.message}`);
+      // Same defaults + options as a minimal consumer (only count, crawlOnly, maxPages, maxDepth,
+      // skipPrivatePages). Do not add excludePaths/privatePageIndicators here — that diverged from
+      // `require('…')` usage and changed discovery. CLI-only: auth + axe tag/rule filters.
+      const crawlOnly = options.crawlOnly;
+      const useSitemapFirst = options.sitemapFirst === true;
+      // Match typical project usage: maxPages 10, maxDepth 50 (override with A11Y_MAX_PAGES).
+      const rawMaxPages = Number.parseInt(process.env.A11Y_MAX_PAGES || '10', 10);
+      const crawlMaxPages =
+        Number.isFinite(rawMaxPages) && rawMaxPages > 0 ? rawMaxPages : 10;
+      if (headlessChrome) {
+        console.warn('');
+        console.warn(
+          '⚠️  Link crawling from a start URL is unreliable in headless Chrome on many sites (often only 1 page).'
+        );
+        console.warn(
+          '   Use a visible browser (omit HEADLESS / set HEADLESS=false), or use --pages, --from-sitemap, or sitemapFirst in code.'
+        );
+        console.warn('');
       }
+      console.log(
+        `Crawl mode → a11yValidatorFromUrl (maxPages=${crawlMaxPages}, maxDepth=50, sitemapFirst=${useSitemapFirst}). Same API as require('klassijs-a11y-validator').`
+      );
+      results = await a11yValidatorFromUrl(testUrl, {
+        count: true,
+        crawlOnly,
+        maxPages: crawlMaxPages,
+        maxDepth: 50,
+        skipPrivatePages: true,
+        sitemapFirst: useSitemapFirst,
+        auth: authConfig,
+        includeTags: a11yRuleOptions.includeTags,
+        excludeTags: a11yRuleOptions.excludeTags,
+        excludeRules: a11yRuleOptions.excludeRules,
+      });
 
-      if (sitemapPages.length > 0) {
-        console.log(`Using sitemap discovery: ${sitemapPages.length} page(s) found.`);
-        if (options.crawlOnly) {
-          results = {
-            crawlOnly: true,
-            totalPages: sitemapPages.length,
-            pagesTested: 0,
-            totalErrors: 0,
-            urls: sitemapPages.map((url) => ({
-              url,
-              pageName: '',
-              errors: 0,
-              status: 'not_tested',
-            })),
-            errors: [],
-            pageMap: {},
-            domain: getHostname(testUrl),
-            message: 'Crawl completed from sitemap discovery. Accessibility testing was skipped (crawlOnly mode).',
-          };
-        } else {
-            if (authConfig) {
-              console.log('Authenticating before sitemap-based page tests...');
-              await authenticate(authConfig);
-            }
-          const pageRun = await runPagesModeTests(sitemapPages, 'sitemap discovery');
-          results = pageRun.results;
-          executionErrors = pageRun.executionErrors;
-        }
-      } else {
-        console.log('No sitemap pages found, using normal crawler discovery.');
-        const crawlOnly = options.crawlOnly;
-        results = await a11yValidatorFromUrl(testUrl, {
-          maxPages: null,      // Set to null for unlimited (discovers ALL pages including children)
-          maxDepth: 10,        // Maximum depth to crawl (set high to find all nested pages)
-          excludePaths: [      // Exclude these paths from testing
-            '/admin',
-            '/api',
-            '/private',
-          ],
-          count: true,         // Include total error count
-          crawlOnly: crawlOnly, // Set to true to only crawl without testing
-          maxPagesToTest: null, // Limit how many pages to test (5 for testing new features, set to null to test all discovered pages)
-            auth: authConfig,
-            skipPrivatePages: false,
-            privatePageIndicators: ['Login', 'Sign in', 'Authentication required'],
+      if (Array.isArray(results.errors)) {
+        const keptErrors = [];
+        const ignoredExecutionErrors = [];
+        results.errors.forEach((entry) => {
+          if (entry && isIgnorableExecutionError(entry.error)) {
+            ignoredExecutionErrors.push(entry);
+          } else {
+            keptErrors.push(entry);
+          }
         });
-
-        // Keep transient WebDriver/Bidi execution errors out of the accessibility issue report.
-        if (Array.isArray(results.errors)) {
-          const keptErrors = [];
-          const ignoredExecutionErrors = [];
-          results.errors.forEach((entry) => {
-            if (entry && isIgnorableExecutionError(entry.error)) {
-              ignoredExecutionErrors.push(entry);
-            } else {
-              keptErrors.push(entry);
-            }
-          });
-          results.errors = keptErrors;
-          executionErrors = ignoredExecutionErrors;
-        }
+        results.errors = keptErrors;
+        executionErrors = ignoredExecutionErrors;
       }
     }
 
     // Display results summary
     if (results.crawlOnly) {
-      // console.log('\n' + '='.repeat(60));
       console.log('Crawl-Only Results');
-      // console.log('='.repeat(60));
       console.log(`Total pages discovered: ${results.totalPages}`);
-      // console.log(`Pages tested: 0 (testing was skipped)`);
       console.log(`\nTo run accessibility tests, remove --crawl-only flag or set CRAWL_ONLY=false`);
     } else {
-      // console.log('\n' + '='.repeat(60));
       console.log('Test Results Summary');
-      // console.log('='.repeat(60));
       console.log(`Total pages discovered: ${results.totalPages}`);
       if (typeof results.pagesTested === 'number') {
         console.log(`Pages tested: ${results.pagesTested}`);
@@ -854,32 +715,14 @@ async function runAccessibilityTest() {
       if (typeof results.totalErrors === 'number') {
         console.log(`Total accessibility errors: ${results.totalErrors}`);
       }
-      // console.log(`Pages with errors: ${results.errors.length}`);
-    }
-
-    if (results.errors.length > 0) {
-      console.log('\nPages with accessibility issues:');
-      results.errors.forEach((error, index) => {
-        console.log(`  ${index + 1}. ${error.url}`);
-        if (error.errors) {
-          console.log(`     Errors: ${error.errors}`);
-        }
-        if (error.error) {
-          console.log(`     Error: ${error.error}`);
-        }
-      });
     }
 
     if (executionErrors.length > 0) {
       console.log(`\nIgnored ${executionErrors.length} transient browser execution error(s) (not included in accessibility summary).`);
     }
 
-    // console.log('\n' + '='.repeat(60));
     console.log('Reports Generated');
-    // console.log('='.repeat(60));
     console.log(`Check the reports directory: ${global.paths.reports}`);
-    // console.log(`Reports are organized by: ${global.browserName}/${global.env.envName}/accessibilityReport/`);
-    // console.log('Each page has both HTML and JSON report files.\n');
 
     // Return results for further processing if needed
     return results;
@@ -934,10 +777,10 @@ module.exports = {
     looksLikeUrlOrPath,
     getPagesFromFile,
     parseCliOptions,
-    fetchText,
     extractSitemapUrlsFromRobotsTxt,
     extractLocUrlsFromXml,
-    isSameHostname,
     discoverPagesFromSitemap,
+    resolveHeadlessChrome,
+    buildBrowserOptions,
   },
 };

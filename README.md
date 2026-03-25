@@ -77,6 +77,14 @@ node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.cs
 # 6) Discover pages from sitemap(s) and test them
 node src/run-a11y-test.js --from-sitemap https://example.com
 node src/run-a11y-test.js --from-sitemap --base-url https://example.com --sitemap-url https://example.com/sitemap.xml
+
+# 7) Override rule selection from CLI
+node src/run-a11y-test.js https://example.com --include-tags wcag2aa,wcag21aa
+node src/run-a11y-test.js https://example.com --exclude-tags best-practice
+node src/run-a11y-test.js https://example.com --exclude-rules color-contrast,image-alt
+
+# 8) Experimental-only run (recommended as non-blocking signal)
+node src/run-a11y-test.js https://example.com --include-tags experimental
 ```
 
 ### NPM Scripts
@@ -106,6 +114,15 @@ node src/run-a11y-test.js --from-sitemap --base-url https://example.com --sitema
 
 # Auth examples (optional)
 pnpm a11y:crawl https://example.com --login-url https://example.com/login --username test-user --password test-pass
+
+# Experimental-only signal run (do not block pipeline)
+pnpm a11y:experimental https://example.com || true
+
+# Generate manual review checklist from latest summary
+pnpm a11y:manual-checklist
+
+# Generate locale/page-type coverage report
+node src/report-coverage-by-page-type.js --inventory ./examples/page-inventory/en.csv
 ```
 
 `pages.txt` and `pages.csv` support:
@@ -257,8 +274,8 @@ This mode:
    ```
 
    The `a11yValidatorFromUrl` function will:
-   - Crawl the website starting from the provided URL
-   - Discover all internal pages (respecting same-domain and depth limits)
+- Crawl the website starting from the provided URL
+- Discover internal pages using sitemap-first discovery (robots.txt sitemap entries + common sitemap locations), with crawler fallback if no sitemap URLs are found
    - Test each discovered page for accessibility issues
    - Generate individual reports for each page
    - Return a summary of all results
@@ -279,6 +296,30 @@ This mode:
 
 
 ## Configuration
+
+### Multi-Page Validation From Pages File (.txt / .csv)
+
+If you want to test a specific list of pages (instead of crawling a whole site), use `a11yValidatorFromPagesFile`.
+
+It supports:
+- `.txt`: one URL or relative path per line
+- `.csv`: URL/path in the first usable column (optionally ignore columns via `csvIgnoreColumns`)
+
+Example:
+```javascript
+const { a11yValidatorFromPagesFile } = require('klassijs-a11y-validator');
+
+// Make sure `global.browser` is initialized before calling this.
+await a11yValidatorFromPagesFile('./pages.csv', {
+  baseUrl: 'https://example.com', // required if your CSV/TXT contains relative paths
+  csvIgnoreColumns: ['pagetype'], // or ['2', '3'] / ['1'] depending on your file
+  maxPagesToTest: null, // null = test all entries
+  auth: null, // optional auth config
+  excludeTags: [],
+  excludeRules: [],
+  includeTags: null,
+});
+```
 
 ### Accessibility Rule Configuration
 
@@ -304,14 +345,22 @@ await a11yValidatorFromUrl('https://yourwebsite.com', {
 - `wcag21a` - WCAG 2.1 Level A
 - `wcag21aa` - WCAG 2.1 Level AA
 - `wcag21aaa` - WCAG 2.1 Level AAA
+- `wcag22a` - WCAG 2.2 Level A
 - `wcag22aa` - WCAG 2.2 Level AA
 - `wcag22aaa` - WCAG 2.2 Level AAA
 - `best-practice` - Additional best practices
 
-**Note:** `wcag22a` (WCAG 2.2 Level A) is not available in axe-core 4.10.2. WCAG 2.2 Level A rules are tagged with specific success criteria tags (e.g., `wcag221`, `wcag222`, `wcag224`) rather than a general `wcag22a` tag.
-
 **Default Configuration:**
-By default, the tool checks all WCAG 2.0, 2.1, and 2.2 standards at Level A and AA (where supported), plus best practices. This ensures comprehensive coverage of most legal and compliance requirements.
+By default, the tool runs all available axe rules and excludes only rules tagged `experimental`.
+This provides broad automated coverage; manual review is still required for criteria that cannot be fully automated.
+
+This default also includes rule/tag families such as:
+
+- `section508`
+- `section508.22.a` ... `section508.22.p` (legacy mapping tags)
+- `EN-301-549`
+- `ACT`
+- `cat.*` category tags (for example `cat.color`, `cat.keyboard`, `cat.text-alternatives`, `cat.aria`, `cat.forms`, `cat.name-role-value`)
 
 **Example: Check only WCAG 2.1 Level AA:**
 ```javascript
@@ -327,6 +376,81 @@ await a11yValidatorFromUrl('https://yourwebsite.com', {
 });
 ```
 
+### CLI Rule Overrides
+
+`src/run-a11y-test.js` supports optional flags:
+
+- `--include-tags <csv>` (example: `wcag2aa,wcag21aa`)
+- `--exclude-tags <csv>`
+- `--exclude-rules <csv>`
+
+Environment variable equivalents:
+
+- `A11Y_INCLUDE_TAGS`
+- `A11Y_EXCLUDE_TAGS`
+- `A11Y_EXCLUDE_RULES`
+
+When `--include-tags` is not provided, defaults apply (all non-experimental rules).
+
+## Enterprise / Global Readiness
+
+### 1) Manual review process for non-automatable criteria
+
+Generate a checklist from the latest comprehensive summary:
+
+```bash
+pnpm a11y:manual-checklist
+```
+
+Output:
+- `reports/manual-a11y-review.md`
+
+### 2) Locale/language/template coverage
+
+Use explicit page inventories per locale:
+
+- `examples/page-inventory/en.csv`
+- `examples/page-inventory/es.csv`
+- `examples/page-inventory/ar.csv`
+
+Run by file:
+
+```bash
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./examples/page-inventory/en.csv
+```
+
+### 3) Experimental checks as non-blocking signal
+
+Keep defaults in blocking runs. Run experimental separately as signal only:
+
+```bash
+pnpm a11y:experimental https://example.com || true
+```
+
+### 4) Coverage tracking by page type
+
+Generate coverage report from inventory + latest summary:
+
+```bash
+node src/report-coverage-by-page-type.js --inventory ./examples/page-inventory/en.csv
+```
+
+Output:
+- `reports/coverage/page-type-coverage.json`
+
+### Axe Rule Reference
+
+Official axe rule catalog (maintained by Deque):
+
+- [axe-core rule descriptions](https://github.com/dequelabs/axe-core/blob/develop/doc/rule-descriptions.md)
+
+To print the exact rule IDs available in your installed axe-core version:
+
+```javascript
+const axe = require('axe-core');
+console.log(axe.getRules().map((rule) => rule.ruleId));
+```
+
 ### Crawler Options
 
 When using `a11yValidatorFromUrl`, you can customize the crawling behavior:
@@ -340,6 +464,10 @@ await a11yValidatorFromUrl('https://yourwebsite.com', {
         '/api',
         '/private'
     ],
+    // Link crawl runs first by default; set true to load URLs from sitemap/robots before crawling.
+    sitemapFirst: false,         // set to true to use sitemap discovery first (capped by maxPages)
+    sitemapUrl: null,           // optional single sitemap URL
+    sitemapUrls: null,          // optional array of sitemap URLs
     maxPagesToTest: 5,           // Limit how many pages to test (default: null = test all)
                                   // Useful for quick checks: discover all pages but only test a few
     count: true                   // Include total error count in output (default: true)

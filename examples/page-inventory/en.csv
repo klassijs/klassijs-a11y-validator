@@ -1,0 +1,6 @@
+locale,pageType,template,url
+en,homepage,marketing,https://example.com/
+en,search,listing,https://example.com/search
+en,forms,contact,https://example.com/contact
+en,auth,login,https://example.com/login
+en,help,article,https://example.com/help/getting-started

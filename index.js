@@ -2,7 +2,9 @@ const path = require('path');
 const fs = require("fs");
 
 const { getA11yValidator, getAccessibilityError, getAccessibilityTotalError, resetErrorCounts } = require('./src/accessibilityLib');
-const { crawlWebsite, isValidUrl } = require('./src/urlCrawler');
+const { crawlWebsite, isValidUrl, authenticate, isPrivatePage } = require('./src/urlCrawler');
+const { discoverPagesFromSitemap } = require('./src/sitemapDiscovery');
+const { getPagesFromFile } = require('./src/pagesFileParser');
 const { dateTime } = require('./utils/dateTime');
 
 const accessibility_lib = path.resolve(__dirname, './src/accessibilityLib.js');
@@ -11,6 +13,184 @@ if (fs.existsSync(accessibility_lib)) {
   global.accessibilityLib = require(accessibility_lib);
   global.accessibilityReportList = rList;
 } else console.error('No Accessibility Lib');
+
+/**
+ * Axe returns arrays; guard against odd serialization (object keyed by index, or JSON string).
+ */
+function normalizeAxeRuleArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed && typeof parsed === 'object') return Object.values(parsed);
+      } catch (_e) {
+        return [];
+      }
+    }
+    return [];
+  }
+  if (value && typeof value === 'object') return Object.values(value);
+  return [];
+}
+
+/**
+ * Safe to embed inside <script>: raw "</script>" in JSON strings would close the tag and hide the rest of the page.
+ */
+function jsonForInlineScript(value) {
+  return JSON.stringify(value).replace(/</g, '\\u003c');
+}
+
+/** Escape text/attribute fragments embedded in summary HTML (axe messages may contain `<`, `&`, etc.). */
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Prefer JSON files that pair 1:1 with HTML paths recorded during this run (avoids merging stale reports
+ * left in the accessibility folder from older runs).
+ */
+function collectJsonPathsFromAccessibilityReportList() {
+  const list = global.accessibilityReportList;
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const paths = new Set();
+  for (const entry of list) {
+    if (!entry || !entry.path) continue;
+    const jsonPath = String(entry.path).replace(/\.html$/i, '.json');
+    if (fs.existsSync(jsonPath)) paths.add(path.resolve(jsonPath));
+  }
+  return paths.size > 0 ? [...paths] : null;
+}
+
+/**
+ * Axe uses `incomplete`; tolerate alternate shapes if a wrapper ever changes the payload.
+ */
+function extractIncompleteFromReport(reportData) {
+  if (!reportData || typeof reportData !== 'object') return [];
+  const raw =
+    reportData.incomplete ??
+    reportData.incompleteResults ??
+    reportData.incompleteChecks ??
+    (reportData.results && reportData.results.incomplete) ??
+    (reportData.axeResults && reportData.axeResults.incomplete);
+  let list = normalizeAxeRuleArray(raw);
+  if (list.length > 0) return list;
+  if (Array.isArray(reportData.frames)) {
+    const merged = [];
+    for (const fr of reportData.frames) {
+      if (!fr || typeof fr !== 'object') continue;
+      merged.push(...normalizeAxeRuleArray(fr.incomplete));
+    }
+    return merged;
+  }
+  return [];
+}
+
+/**
+ * Resolve directories that contain per-page JSON/HTML for this run.
+ * Prefer paths recorded when reports were written (matches browser folder name exactly).
+ */
+function resolveAccessibilityReportsDirs(reportsDir, browserName, envName) {
+  const list = global.accessibilityReportList;
+  const dirs = new Set();
+  if (Array.isArray(list) && list.length > 0) {
+    list.forEach((entry) => {
+      if (entry && entry.path) {
+        const dir = path.dirname(entry.path);
+        if (dir) dirs.add(dir);
+      }
+    });
+  }
+  if (dirs.size > 0) {
+    return Array.from(dirs).filter((d) => fs.existsSync(d));
+  }
+
+  const envLower = String(envName || 'test').toLowerCase();
+  const fallback = path.join(reportsDir, 'accessibility', browserName, envLower);
+  if (fs.existsSync(fallback)) {
+    return [fallback];
+  }
+
+  const base = path.join(reportsDir, 'accessibility');
+  if (!fs.existsSync(base)) {
+    return [fallback];
+  }
+
+  const found = [];
+  for (const d of fs.readdirSync(base, { withFileTypes: true })) {
+    if (!d.isDirectory()) continue;
+    const candidate = path.join(base, d.name, envLower);
+    if (fs.existsSync(candidate)) {
+      const jsonCount = fs.readdirSync(candidate).filter((f) => f.endsWith('.json')).length;
+      if (jsonCount > 0) found.push(candidate);
+    }
+  }
+  return found.length > 0 ? found : [fallback];
+}
+
+function getBrowserNameForReportPath() {
+  try {
+    const { astellen } = require('klassijs-astellen');
+    const b = astellen.get('BROWSER_NAME');
+    if (b) return String(b);
+  } catch (_e) {
+    /* klassijs-astellen optional in some consumers */
+  }
+  return global.browserName ? String(global.browserName) : 'chrome';
+}
+
+function getLegacySinglePageSummaryState() {
+  if (!global.__a11yLegacySinglePageSummaryState) {
+    global.__a11yLegacySinglePageSummaryState = {
+      startedAtMs: Date.now(),
+      pageCount: 0,
+      hasGeneratedSummary: false,
+    };
+  }
+  return global.__a11yLegacySinglePageSummaryState;
+}
+
+function formatDuration(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+  return parts.join(' ');
+}
+
+function resolveDomainForSummary() {
+  const baseUrl = global.env?.base_url || '';
+  if (!baseUrl) return 'unknown-domain';
+  try {
+    return new URL(baseUrl).hostname || 'unknown-domain';
+  } catch (_e) {
+    return 'unknown-domain';
+  }
+}
+
+async function maybeGenerateSummaryForLegacySinglePageFlow(count) {
+  const state = getLegacySinglePageSummaryState();
+  // Only generate for legacy single-page flows when caller indicates "final/total"
+  // using count=true and we've validated more than one page.
+  if (!count || state.pageCount <= 1 || state.hasGeneratedSummary) return;
+
+  const now = Date.now();
+  const domain = resolveDomainForSummary();
+  const totalDuration = formatDuration(now - state.startedAtMs);
+  await generateComprehensiveReport({}, domain, '0s', totalDuration);
+  state.hasGeneratedSummary = true;
+}
 
 /**
  * Validates accessibility for a single page
@@ -29,6 +209,13 @@ async function a11yValidator(pageName, countOrOptions = false, options = {}) {
   // Run the accessibility report and wait for it to complete
   await getA11yValidator(pageName, a11yOptions);
   await accessibilityError(count);
+
+  // Backward-compatible behavior for legacy tests:
+  // if the single-page API is called for multiple pages in one run, auto-generate
+  // comprehensive summary without requiring test code changes.
+  const state = getLegacySinglePageSummaryState();
+  state.pageCount += 1;
+  await maybeGenerateSummaryForLegacySinglePageFlow(count);
 }
 
 /**
@@ -56,6 +243,7 @@ async function a11yValidator(pageName, countOrOptions = false, options = {}) {
  *   If not provided, defaults to all WCAG 2.0/2.1/2.2 Level A and AA plus best-practice
  * @param {number|null} options.maxPagesToTest - Maximum number of pages to actually test (default: null = test all discovered pages)
  *   Useful for quick checks: discover all pages but only test a subset (e.g., test only 5 pages out of 83 discovered)
+ * @param {boolean} [options.sitemapFirst=false] - If true, discover URLs from sitemap/robots before link crawling (capped by maxPages). Default is link crawl first so maxPages applies to discovered links.
  * @returns {Promise<Object>} - Summary of validation results or crawl results if crawlOnly is true
  */
 async function a11yValidatorFromUrl(url, options = {}) {
@@ -72,6 +260,9 @@ async function a11yValidatorFromUrl(url, options = {}) {
     excludeRules = [],
     includeTags = null,
     maxPagesToTest = null, // Limit how many pages to test (null = test all)
+    sitemapFirst = false,
+    sitemapUrls = null,
+    sitemapUrl = null,
   } = options;
 
   if (!isValidUrl(url)) {
@@ -89,18 +280,77 @@ async function a11yValidatorFromUrl(url, options = {}) {
   
   // Start timer for crawl duration
   const crawlStartTime = Date.now();
-  
-  // Crawl the website to discover all pages
-  const crawlResult = await crawlWebsite(url, {
-    maxPages,
-    maxDepth,
-    excludePaths,
-    auth,
-    privatePageIndicators,
-    skipPrivatePages,
-  });
 
-  // Calculate crawl duration
+  let crawlResult = null;
+  const effectiveSitemapUrls = Array.isArray(sitemapUrls)
+    ? sitemapUrls
+    : sitemapUrls
+      ? [sitemapUrls]
+      : sitemapUrl
+        ? [sitemapUrl]
+        : [];
+
+  // Optional sitemap-first: load URL list from sitemap/robots before link crawling.
+  if (sitemapFirst) {
+    try {
+      const discoveredFromSitemap = await discoverPagesFromSitemap({
+        baseUrl: url,
+        sitemapUrls: effectiveSitemapUrls,
+      });
+
+      if (Array.isArray(discoveredFromSitemap) && discoveredFromSitemap.length > 0) {
+        const effectiveMaxPages = !maxPages || maxPages <= 0 ? Number.MAX_SAFE_INTEGER : maxPages;
+
+        const filteredUrls = discoveredFromSitemap
+          .filter((pageUrl) => {
+            if (!excludePaths || excludePaths.length === 0) return true;
+            return !excludePaths.some((pattern) => {
+              try {
+                const urlObj = new URL(pageUrl);
+                return urlObj.pathname.includes(pattern);
+              } catch (_e) {
+                return String(pageUrl).includes(pattern);
+              }
+            });
+          })
+          .slice(0, effectiveMaxPages);
+
+        if (filteredUrls.length > 0) {
+          const domain = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+          const pageMap = {};
+          const pagesByDepth = { 0: [] };
+          filteredUrls.forEach((pageUrl) => {
+            pageMap[pageUrl] = { depth: 0, parent: null, children: [], discoveredFrom: [] };
+            pagesByDepth[0].push(pageUrl);
+          });
+
+          crawlResult = {
+            urls: filteredUrls,
+            pageMap,
+            domain,
+            pagesByDepth,
+            totalPages: filteredUrls.length,
+          };
+        }
+      }
+    } catch (sitemapErr) {
+      console.warn(`Sitemap discovery failed; falling back to crawler. ${sitemapErr.message}`);
+    }
+  }
+
+  // Fall back to crawler if sitemap discovery did not yield any pages.
+  if (!crawlResult) {
+    crawlResult = await crawlWebsite(url, {
+      maxPages,
+      maxDepth,
+      excludePaths,
+      auth,
+      privatePageIndicators,
+      skipPrivatePages,
+    });
+  }
+
+  // Calculate duration for whichever discovery method ran.
   const crawlEndTime = Date.now();
   const crawlDurationMs = crawlEndTime - crawlStartTime;
   
@@ -162,8 +412,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
       };
       
       fs.writeFileSync(pageMapFile, JSON.stringify(sitemapData, null, 2), 'utf-8');
-      console.info(`\nPage map (JSON) saved to: ${pageMapFile}`);
-      
+
       // Save human-readable page list
       const pageListFile = `${pageMapDir}/${baseFileName}.txt`;
       let pageListContent = `Sitemap for: ${domain}\n`;
@@ -194,8 +443,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
       });
       
       fs.writeFileSync(pageListFile, pageListContent, 'utf-8');
-      console.info(`Page list (TXT) saved to: ${pageListFile}`);
-      
+
       // Save simple HTML sitemap for easy viewing
       const htmlSitemapFile = `${pageMapDir}/${baseFileName}.html`;
       let htmlContent = `<!DOCTYPE html>
@@ -246,8 +494,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
 </html>`;
       
       fs.writeFileSync(htmlSitemapFile, htmlContent, 'utf-8');
-      console.info(`Page list (HTML) saved to: ${htmlSitemapFile}`);
-      
+
       return {
         json: pageMapFile,
         txt: pageListFile,
@@ -289,14 +536,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
     console.info(`Total pages discovered: ${discoveredUrls.length}`);
     console.info(`Maximum depth: ${maxDepth}`);
     console.info(`Crawl duration: ${crawlDuration}`);
-    
-    if (pagesByDepth) {
-      console.info(`\nPages by depth:`);
-      Object.keys(pagesByDepth).sort((a, b) => parseInt(a) - parseInt(b)).forEach(depth => {
-        console.info(`  Depth ${depth}: ${pagesByDepth[depth].length} pages`);
-      });
-    }
-    
+
     console.info(`\nPage relationships:`);
     console.info(`  Pages with children: ${pagesWithChildren.length}`);
     console.info(`  Pages without children (leaf nodes): ${pagesWithoutChildren.length}`);
@@ -349,15 +589,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
   }
   console.info(`Domain: ${domain}`);
   console.info(`Crawl duration: ${crawlDuration}`);
-  
-  // Show breakdown by depth
-  if (pagesByDepth) {
-    console.info(`\nPages by depth:`);
-    Object.keys(pagesByDepth).sort((a, b) => parseInt(a) - parseInt(b)).forEach(depth => {
-      console.info(`  Depth ${depth}: ${pagesByDepth[depth].length} pages`);
-    });
-  }
-  
+
   console.info(`${'='.repeat(60)}\n`);
 
   const results = {
@@ -516,17 +748,218 @@ async function a11yValidatorFromUrl(url, options = {}) {
   console.info(`Pages with errors: ${results.errors.length}`);
   console.info(`Crawl duration: ${crawlDuration}`);
   console.info(`Total duration (crawl + testing): ${totalDuration}`);
-  
-  if (results.testedPages.length > 0) {
-    console.info(`\nAll tested pages:`);
-    results.testedPages.forEach((url, index) => {
-      const pageResult = results.urls.find(u => u.url === url);
-      const status = pageResult?.status === 'has_errors' ? '⚠️' : pageResult?.status === 'error' ? '❌' : '✅';
-      console.info(`  ${status} ${index + 1}. ${url}`);
-    });
-  }
-  
+
   console.info(`${'='.repeat(60)}\n`);
+
+  return results;
+}
+
+/**
+ * Validates accessibility for a set of explicit pages provided in a `.txt` or `.csv` file.
+ * Each line/row should contain a full URL, or a relative path (requires `options.baseUrl`).
+ *
+ * @param {string} pagesFilePath
+ * @param {Object} options
+ * @param {string|null} options.baseUrl - Required if the file contains relative paths.
+ * @param {string|string[]} options.csvIgnoreColumns - CSV columns to ignore (header name or index).
+ * @param {boolean} options.count - Whether to record total error count.
+ * @param {Object|null} options.auth - Authentication configuration for protected pages.
+ * @param {boolean} options.crawlOnly - If true, it will not run axe validation.
+ * @param {number|null} options.maxPagesToTest - Limit how many entries to actually test.
+ * @param {Array<string>} options.excludeTags
+ * @param {Array<string>} options.excludeRules
+ * @param {Array<string>|null} options.includeTags
+ */
+async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
+  const {
+    count = true,
+    baseUrl = null,
+    csvIgnoreColumns = [],
+    auth = null,
+    crawlOnly = false,
+    maxPagesToTest = null,
+    excludeTags = [],
+    excludeRules = [],
+    includeTags = null,
+  } = options;
+
+  if (!pagesFilePath) throw new Error('pagesFilePath is required');
+
+  if (!global.browser) {
+    throw new Error('Browser instance not available. Make sure browser is initialized before calling this function.');
+  }
+
+  resetErrorCounts();
+
+  const fileStartTime = Date.now();
+  const pages = getPagesFromFile(pagesFilePath, { baseUrl, csvIgnoreColumns });
+
+  const crawlEndTime = Date.now();
+  const crawlDurationMs = crawlEndTime - fileStartTime;
+
+  const formatDuration = (ms) => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const parts = [];
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
+    return parts.join(' ');
+  };
+
+  const crawlDuration = formatDuration(crawlDurationMs);
+
+  if (!pages || pages.length === 0) {
+    return {
+      totalPages: 0,
+      pagesTested: 0,
+      totalErrors: 0,
+      urls: [],
+      errors: [],
+      pageMap: {},
+      domain: '',
+      testedPages: [],
+      pagesSkipped: 0,
+      pagesToTest: 0,
+      crawlOnly: !!crawlOnly,
+      crawlDuration,
+      message: 'No pages found in provided file.',
+    };
+  }
+
+  const domain = (() => {
+    try {
+      return new URL(pages[0]).hostname.replace(/^www\./, '').toLowerCase();
+    } catch (_e) {
+      return '';
+    }
+  })();
+
+  const effectiveMax = maxPagesToTest && maxPagesToTest > 0 ? Math.min(maxPagesToTest, pages.length) : pages.length;
+  const pagesSkipped = pages.length - effectiveMax;
+
+  const pageMap = {};
+  const pagesByDepth = { 0: [] };
+  pages.forEach((pageUrl) => {
+    pageMap[pageUrl] = { depth: 0, parent: null, children: [], discoveredFrom: [] };
+    pagesByDepth[0].push(pageUrl);
+  });
+
+  if (crawlOnly) {
+    return {
+      crawlOnly: true,
+      totalPages: pages.length,
+      pagesTested: 0,
+      totalErrors: 0,
+      urls: pages.map((url) => ({ url, pageName: '', errors: 0, status: 'not_tested' })),
+      errors: [],
+      pageMap,
+      domain,
+      pagesByDepth,
+      crawlDuration,
+      message: 'Page list loaded; accessibility testing skipped (crawlOnly mode).',
+    };
+  }
+
+  // Perform login once for the entire browser session, if auth is configured.
+  if (auth) {
+    await authenticate(auth);
+  }
+
+  const results = {
+    totalPages: pages.length,
+    pagesTested: 0,
+    totalErrors: 0,
+    urls: [],
+    errors: [],
+    pageMap,
+    domain,
+    testedPages: [],
+    pagesSkipped,
+    pagesToTest: effectiveMax,
+  };
+
+  for (let i = 0; i < effectiveMax; i++) {
+    const pageUrl = pages[i];
+    try {
+      await global.browser.url(pageUrl);
+
+      await global.browser.waitUntil(
+        async () => {
+          const readyState = await global.browser.execute(() => document.readyState);
+          return readyState === 'complete';
+        },
+        {
+          timeout: 10000,
+          timeoutMsg: 'Page did not load completely',
+        }
+      );
+
+      await global.browser.pause(500);
+
+      // Ensure we're in the correct tab (not the WebdriverIO Bidi tab)
+      try {
+        const windowHandles = await global.browser.getWindowHandles();
+        if (windowHandles.length > 1) {
+          const currentUrl = await global.browser.getUrl();
+          if (!currentUrl || currentUrl === pageUrl) {
+            // already in the right tab
+          } else {
+            await global.browser.switchToWindow(windowHandles[0]);
+            await global.browser.pause(200);
+          }
+        }
+      } catch (_switchErr) {
+        // ignore and continue
+      }
+
+      const urlObj = new URL(pageUrl);
+      const pageName =
+        urlObj.pathname === '/' || urlObj.pathname === ''
+          ? 'home'
+          : urlObj.pathname
+              .replace(/\//g, '_')
+              .replace(/^_|_$/g, '')
+              .substring(0, 50) || 'page';
+
+      await getA11yValidator(pageName, { excludeTags, excludeRules, includeTags });
+
+      const pageErrors = getAccessibilityError();
+      results.pagesTested++;
+      results.totalErrors += pageErrors;
+
+      const pageResult = {
+        url: pageUrl,
+        pageName,
+        errors: pageErrors,
+        status: pageErrors > 0 ? 'has_errors' : 'passed',
+      };
+
+      results.urls.push(pageResult);
+      results.testedPages.push(pageUrl);
+
+      if (pageErrors > 0) {
+        results.errors.push({ url: pageUrl, pageName, errors: pageErrors });
+      }
+    } catch (error) {
+      results.errors.push({ url: pageUrl, error: error.message, status: 'error' });
+      results.pagesTested++;
+      results.testedPages.push(pageUrl);
+    }
+  }
+
+  const totalEndTime = Date.now();
+  const totalDurationMs = totalEndTime - fileStartTime;
+  const totalDuration = formatDuration(totalDurationMs);
+
+  // Match crawl-based flow: generate summary whenever at least one page was tested (not only when >1).
+  if (results.testedPages.length > 0) {
+    await generateComprehensiveReport(results, domain, crawlDuration, totalDuration);
+  }
+
+  await accessibilityError(count);
 
   return results;
 }
@@ -541,50 +974,65 @@ async function a11yValidatorFromUrl(url, options = {}) {
 async function generateComprehensiveReport(results, domain, crawlDuration, totalDuration) {
   try {
     const envName = global.env?.envName?.toLowerCase() || 'test';
-    const browserName = global.browserName || 'chrome';
+    const browserName = getBrowserNameForReportPath();
     const reportsDir = global.paths?.reports || './reports';
     const summaryDir = `${reportsDir}/summary`;
-    const accessibilityReportsDir = `${reportsDir}/accessibility/${browserName}/${envName}`;
-    
-    // Check if accessibility reports directory exists
-    if (!fs.existsSync(accessibilityReportsDir)) {
-      console.warn('No accessibility reports found. Skipping comprehensive summary generation.');
+    const accessibilityReportsDirs = resolveAccessibilityReportsDirs(reportsDir, browserName, envName);
+
+    let uniqueReportPaths = collectJsonPathsFromAccessibilityReportList();
+    if (!uniqueReportPaths || uniqueReportPaths.length === 0) {
+      const reportFilePaths = [];
+      accessibilityReportsDirs.forEach((dir) => {
+        if (!fs.existsSync(dir)) return;
+        fs.readdirSync(dir)
+          .filter((f) => f.endsWith('.json'))
+          .forEach((f) => reportFilePaths.push(path.join(dir, f)));
+      });
+      uniqueReportPaths = [...new Set(reportFilePaths)];
+    }
+
+    if (uniqueReportPaths.length === 0) {
+      console.warn(
+        'No accessibility JSON reports found (check reports path and browser/env folder). Skipping comprehensive summary generation.'
+      );
       return;
     }
-    
+
     // Create summary directory if it doesn't exist
     if (!fs.existsSync(summaryDir)) {
       fs.mkdirSync(summaryDir, { recursive: true });
     }
-    
+
     // Read all individual page reports
     const pageReports = [];
-    const reportFiles = fs.readdirSync(accessibilityReportsDir).filter(file => file.endsWith('.json'));
-    
-    if (reportFiles.length === 0) {
-      console.warn('No JSON report files found. Skipping comprehensive summary generation.');
-      return;
-    }
-    
-    for (const file of reportFiles) {
+    const summaryDirAbs = path.resolve(summaryDir);
+
+    for (const filePath of uniqueReportPaths) {
       try {
-        const filePath = path.join(accessibilityReportsDir, file);
+        const file = path.basename(filePath);
+        const reportDir = path.dirname(filePath);
         const reportData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        
-        // Extract page name from filename
+
+        // Extract page name from filename (same convention as accessibilityLib)
         const pageName = file.replace(`-${browserName}_`, '_').replace('.json', '');
         const pageUrl = reportData.url || '';
-        
+
+        const pageHtmlAbs = path.join(reportDir, file.replace(/\.json$/i, '.html'));
+        const localReportHref = fs.existsSync(pageHtmlAbs)
+          ? path.relative(summaryDirAbs, pageHtmlAbs).split(path.sep).join('/')
+          : null;
+
         pageReports.push({
           pageName,
           url: pageUrl,
-          violations: reportData.violations || [],
-          incomplete: reportData.incomplete || [],
-          passes: reportData.passes || [],
-          inapplicable: reportData.inapplicable || [],
+          localReportHref,
+          violations: normalizeAxeRuleArray(reportData.violations),
+          incomplete: extractIncompleteFromReport(reportData),
+          passes: normalizeAxeRuleArray(reportData.passes),
+          inapplicable: normalizeAxeRuleArray(reportData.inapplicable),
         });
       } catch (e) {
-        console.warn(`Could not read report file ${file}: ${e.message}`);
+        console.warn(`Could not read report file ${filePath}: ${e.message}`);
       }
     }
     
@@ -592,67 +1040,78 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
     const violationsByRule = {};
     const incompleteByRule = {};
     
-    pageReports.forEach(pageReport => {
-      // Process violations
-      pageReport.violations.forEach(violation => {
-        const ruleId = violation.id;
-        if (!violationsByRule[ruleId]) {
-          violationsByRule[ruleId] = {
-            id: ruleId,
-            description: violation.description,
-            help: violation.help,
-            helpUrl: violation.helpUrl,
-            impact: violation.impact,
-            tags: violation.tags || [],
-            pages: [],
-            totalInstances: 0,
-          };
-        }
-        
-        const instanceCount = violation.nodes?.length || 0;
-        // Ensure we have a valid URL or pageName
-        const pageUrl = pageReport.url || pageReport.pageName || '';
-        if (pageUrl) {
-          violationsByRule[ruleId].pages.push({
-            url: pageUrl,
-            pageName: pageReport.pageName || pageUrl,
-            instances: instanceCount,
-            nodes: violation.nodes || [],
-          });
-          violationsByRule[ruleId].totalInstances += instanceCount;
-        }
-      });
-      
-      // Process incomplete checks
-      pageReport.incomplete.forEach(incomplete => {
-        const ruleId = incomplete.id;
-        if (!incompleteByRule[ruleId]) {
-          incompleteByRule[ruleId] = {
-            id: ruleId,
-            description: incomplete.description,
-            help: incomplete.help,
-            helpUrl: incomplete.helpUrl,
-            impact: incomplete.impact,
-            tags: incomplete.tags || [],
-            pages: [],
-            totalInstances: 0,
-          };
-        }
-        
-        const instanceCount = incomplete.nodes?.length || 0;
-        // Always add the page - use pageName as fallback if URL is missing
-        const pageUrl = pageReport.url || pageReport.pageName || 'Unknown page';
-        const pageName = pageReport.pageName || pageUrl || 'Unknown page';
-        incompleteByRule[ruleId].pages.push({
-          url: pageUrl,
-          pageName: pageName,
-          instances: instanceCount,
-          nodes: incomplete.nodes || [],
+    pageReports.forEach((pageReport) => {
+      try {
+        // Process violations
+        pageReport.violations.forEach((violation) => {
+          if (!violation || typeof violation !== 'object') return;
+          const ruleId = violation.id;
+          if (!violationsByRule[ruleId]) {
+            violationsByRule[ruleId] = {
+              id: ruleId,
+              description: violation.description,
+              help: violation.help,
+              helpUrl: violation.helpUrl,
+              impact: violation.impact,
+              tags: violation.tags || [],
+              pages: [],
+              totalInstances: 0,
+            };
+          }
+
+          const instanceCount = violation.nodes?.length || 0;
+          const pageUrl = pageReport.url || pageReport.pageName || '';
+          if (pageUrl) {
+            violationsByRule[ruleId].pages.push({
+              url: pageUrl,
+              pageName: pageReport.pageName || pageUrl,
+              instances: instanceCount,
+              nodes: violation.nodes || [],
+              localReportHref: pageReport.localReportHref,
+            });
+            violationsByRule[ruleId].totalInstances += instanceCount;
+          }
         });
-        incompleteByRule[ruleId].totalInstances += instanceCount;
-      });
+
+        // Process incomplete checks (axe "manual review" bucket only)
+        pageReport.incomplete.forEach((incomplete) => {
+          if (!incomplete || typeof incomplete !== 'object') return;
+          const ruleId =
+            incomplete.id != null
+              ? incomplete.id
+              : incomplete.ruleId != null
+                ? incomplete.ruleId
+                : '__unknown_rule__';
+          if (!incompleteByRule[ruleId]) {
+            incompleteByRule[ruleId] = {
+              id: ruleId,
+              description: incomplete.description,
+              help: incomplete.help,
+              helpUrl: incomplete.helpUrl,
+              impact: incomplete.impact,
+              tags: incomplete.tags || [],
+              pages: [],
+              totalInstances: 0,
+            };
+          }
+
+          const instanceCount = incomplete.nodes?.length || 0;
+          const pageUrl = pageReport.url || pageReport.pageName || 'Unknown page';
+          const pageName = pageReport.pageName || pageUrl || 'Unknown page';
+          incompleteByRule[ruleId].pages.push({
+            url: pageUrl,
+            pageName: pageName,
+            instances: instanceCount,
+            nodes: incomplete.nodes || [],
+            localReportHref: pageReport.localReportHref,
+          });
+          incompleteByRule[ruleId].totalInstances += instanceCount;
+        });
+      } catch (aggErr) {
+        console.warn(`Could not aggregate report for page "${pageReport.pageName}": ${aggErr.message}`);
+      }
     });
-    
+
     // Calculate statistics
     const totalPages = pageReports.length;
     const pagesWithViolations = new Set();
@@ -703,22 +1162,47 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
       incompleteByRule: sortedIncomplete,
       siteWideViolationsList: siteWideViolations,
       siteWideIncompleteList: siteWideIncomplete,
-      allPages: pageReports.map(p => ({ url: p.url, pageName: p.pageName })),
+      allPages: pageReports.map(p => ({ url: p.url, pageName: p.pageName, localReportHref: p.localReportHref })),
     };
     
     const jsonFile = `${summaryDir}/${baseFileName}.json`;
     fs.writeFileSync(jsonFile, JSON.stringify(summaryData, null, 2), 'utf-8');
-    console.info(`\nComprehensive summary (JSON) saved to: ${jsonFile}`);
-    
+
     // Generate HTML summary report
     const htmlFile = `${summaryDir}/${baseFileName}.html`;
     const htmlContent = generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, siteWideViolations, siteWideIncomplete);
     fs.writeFileSync(htmlFile, htmlContent, 'utf-8');
-    console.info(`Comprehensive summary (HTML) saved to: ${htmlFile}`);
-    
+
   } catch (error) {
     console.warn('Could not generate comprehensive summary report:', error.message);
   }
+}
+
+/**
+ * Renders the instance count as a link to the per-page HTML report when available.
+ * @param {string} [hashFragment] - e.g. '#menu2' for Incomplete (must match utils/ReportSample tab ids)
+ */
+function instancesCountMarkup(page, hashFragment) {
+  const n = page.instances || 0;
+  const label = `${n} instance${n !== 1 ? 's' : ''}`;
+  const href = page.localReportHref;
+  if (href) {
+    const safeHref = href.split('/').map(encodeURIComponent).join('/');
+    const hash =
+      hashFragment && String(hashFragment).trim() !== ''
+        ? String(hashFragment).startsWith('#')
+          ? hashFragment
+          : `#${hashFragment}`
+        : '';
+    const title =
+      hash === '#menu2'
+        ? 'Open full page report (Incomplete tab)'
+        : hash === '#menu1'
+          ? 'Open full page report (Violations tab)'
+          : 'Open full page report';
+    return `<a href="${safeHref}${hash}" class="instances-count instances-count-link" title="${title}">${label}</a>`;
+  }
+  return `<span class="instances-count">${label}</span>`;
 }
 
 /**
@@ -726,6 +1210,18 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
  */
 function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, siteWideViolations, siteWideIncomplete) {
   const { domain, totalPages, pagesWithViolations, pagesWithIncomplete, totalViolations, totalIncomplete, siteWideViolations: siteWideCountFromData, siteWideIncomplete: siteWideIncompleteCount, crawlDuration, totalDuration, generatedAt } = summaryData;
+  const esc = escapeHtml;
+
+  const incompleteRules =
+    Array.isArray(sortedIncomplete) && sortedIncomplete.length > 0
+      ? sortedIncomplete
+      : Array.isArray(summaryData.incompleteByRule)
+        ? summaryData.incompleteByRule
+        : [];
+  const testedPages =
+    Array.isArray(summaryData.allPages) && summaryData.allPages.length > 0
+      ? summaryData.allPages
+      : [];
   
   let html = `<!DOCTYPE html>
 <html lang="en">
@@ -771,6 +1267,8 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
         .page-url { color: #3498db; text-decoration: none; font-weight: 500; }
         .page-url:hover { text-decoration: underline; }
         .instances-count { display: inline-block; background: #e74c3c; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.85em; margin-left: 10px; }
+        a.instances-count-link { cursor: pointer; text-decoration: none; color: white; }
+        a.instances-count-link:hover { filter: brightness(1.08); text-decoration: underline; }
         .help-link { color: #3498db; text-decoration: none; font-size: 0.9em; }
         .help-link:hover { text-decoration: underline; }
         .tags { margin-top: 10px; }
@@ -882,25 +1380,243 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
   
   const siteWideCount = sortedViolations.filter(v => v.pages.length > totalPages * 0.5).length;
   const pageSpecificCount = sortedViolations.length - siteWideCount;
+
+  if (testedPages.length > 0) {
+    html += `
+        <div class="section-controls">
+            <button onclick="window.toggleAll('allPagesSection', true)">Expand All</button>
+            <button onclick="window.toggleAll('allPagesSection', false)">Collapse All</button>
+        </div>
+        <h2 class="collapsible-header" onclick="window.toggleSection('allPagesSection')" style="cursor: pointer;">
+            <span><span class="collapse-icon collapsed" id="allPagesIcon">▼</span>📄 All Pages Tested</span>
+            <span style="font-size: 0.7em; color: #7f8c8d;">(${testedPages.length} pages)</span>
+        </h2>
+        <div id="allPagesSection" class="collapsible-content collapsed" style="padding: 20px 0;">
+            <p style="margin-bottom: 12px;">Complete list of pages included in this run.</p>
+            <div class="pages-list">
+                ${testedPages.map((page, index) => {
+                  const pageUrl = page && page.url ? String(page.url) : '';
+                  const localReportHref = page && page.localReportHref ? String(page.localReportHref) : '';
+                  const displayText = pageUrl || (page && page.pageName ? String(page.pageName) : `Page ${index + 1}`);
+                  const reportLink = localReportHref
+                    ? `<a href="${esc(localReportHref)}" target="_blank" rel="noopener noreferrer" class="instances-count instances-count-link" title="Open full page report">view report</a>`
+                    : '';
+                  const pageAnchor = pageUrl
+                    ? `<a href="${esc(pageUrl)}" target="_blank" rel="noopener noreferrer" class="page-url">${esc(displayText)}</a>`
+                    : `<span class="page-url">${esc(displayText)}</span>`;
+                  return `
+                        <div class="page-item">
+                            <span style="margin-right: 8px; color: #666;">${index + 1}.</span>
+                            ${pageAnchor}
+                            ${reportLink}
+                        </div>`;
+                }).join('')}
+            </div>
+        </div>`;
+  }
+
+  // Site-wide issues section
+  if (siteWideViolations.length > 0) {
+    html += `
+        <div class="section-controls">
+            <button onclick="window.toggleAll('siteWideSection', true)">Expand All</button>
+            <button onclick="window.toggleAll('siteWideSection', false)">Collapse All</button>
+        </div>
+        <h2 class="collapsible-header" onclick="window.toggleSection('siteWideSection')" style="cursor: pointer;">
+            <span><span class="collapse-icon collapsed" id="siteWideIcon">▼</span>🚨 Site-Wide Issues (Affecting >50% of Pages)</span>
+            <span style="font-size: 0.7em; color: #7f8c8d;">(${siteWideViolations.length} issues)</span>
+        </h2>
+        <div id="siteWideSection" class="collapsible-content collapsed" style="padding: 20px 0;">
+            <p style="margin-bottom: 20px; color: #e74c3c; font-weight: bold;">These issues affect most pages and should be fixed first for maximum impact.</p>`;
+    
+    siteWideViolations.forEach((rule, index) => {
+      const impactClass = rule.impact ? `impact-${rule.impact}` : 'impact-moderate';
+      const percentage = Math.round((rule.pages.length / totalPages) * 100);
+      const title = esc(rule.help || rule.id);
+      const desc = esc(rule.description || '');
+      const helpUrl = rule.helpUrl ? esc(rule.helpUrl) : '';
+      html += `
+        <div class="violation-group site-wide">
+            <div class="violation-header violation-toggle" onclick="window.toggleViolation('siteWideViolation${index}')" style="cursor: pointer;">
+                <div>
+                    <span class="collapse-icon" id="siteWideViolation${index}Icon">▼</span>
+                    <span class="violation-title">${title}</span>
+                    <span class="impact-badge ${impactClass}">${esc(rule.impact || 'unknown')}</span>
+                    <span class="site-wide-badge">${percentage}% of pages</span>
+                </div>
+                <div class="violation-meta">
+                    ${rule.totalInstances} total instances across ${rule.pages.length} pages
+                </div>
+            </div>
+            <div id="siteWideViolation${index}" class="violation-content collapsed">
+                <p style="margin: 10px 0; color: #555;">${desc}</p>
+                ${helpUrl ? `<a href="${helpUrl}" target="_blank" rel="noopener noreferrer" class="help-link">Learn more →</a>` : ''}
+                <div class="tags">
+                    ${rule.tags.map((tag) => `<span class="tag">${esc(tag)}</span>`).join('')}
+                </div>
+                <div class="pages-list">
+                    <strong>Affected Pages (${rule.pages.length}):</strong>
+                    ${rule.pages && rule.pages.length > 0 ? rule.pages.map(page => {
+                        const pageUrl = page.url || page.pageName || 'Unknown page';
+                        const displayUrl = pageUrl || 'Unknown page';
+                        return `
+                        <div class="page-item">
+                            <a href="${esc(pageUrl)}" target="_blank" rel="noopener noreferrer" class="page-url">${esc(displayUrl)}</a>
+                            ${instancesCountMarkup(page, '#menu1')}
+                        </div>`;
+                    }).join('') : '<p style="color: #999; font-style: italic;">No pages available</p>'}
+                </div>
+            </div>
+        </div>`;
+    });
+    html += `</div>`;
+  }
   
-  // Add JavaScript for charts
+  // All violations section
+  if (sortedViolations.length > 0) {
+    html += `
+        <div class="section-controls">
+            <button onclick="window.toggleAll('allViolationsSection', true)">Expand All</button>
+            <button onclick="window.toggleAll('allViolationsSection', false)">Collapse All</button>
+        </div>
+        <h2 class="collapsible-header" onclick="window.toggleSection('allViolationsSection')" style="cursor: pointer;">
+            <span><span class="collapse-icon collapsed" id="allViolationsIcon">▼</span>⚠️ All Violations (Grouped by Issue Type)</span>
+            <span style="font-size: 0.7em; color: #7f8c8d;">(${sortedViolations.length} issues)</span>
+        </h2>
+        <div id="allViolationsSection" class="collapsible-content collapsed" style="padding: 20px 0;">
+            <p style="margin-bottom: 20px;">Pages are grouped by the same accessibility issues. Fixing a common issue once can help multiple pages.</p>`;
+    
+    sortedViolations.forEach((rule, index) => {
+      const isSiteWide = rule.pages.length > totalPages * 0.5;
+      const impactClass = rule.impact ? `impact-${rule.impact}` : 'impact-moderate';
+      const title = esc(rule.help || rule.id);
+      const desc = esc(rule.description || '');
+      const helpUrl = rule.helpUrl ? esc(rule.helpUrl) : '';
+      html += `
+        <div class="violation-group ${isSiteWide ? 'site-wide' : ''}">
+            <div class="violation-header violation-toggle" onclick="window.toggleViolation('allViolation${index}')" style="cursor: pointer;">
+                <div>
+                    <span class="collapse-icon collapsed" id="allViolation${index}Icon">▼</span>
+                    <span class="violation-title">${title}</span>
+                    <span class="impact-badge ${impactClass}">${esc(rule.impact || 'unknown')}</span>
+                    ${isSiteWide ? '<span class="site-wide-badge">Site-Wide</span>' : ''}
+                </div>
+                <div class="violation-meta">
+                    ${rule.totalInstances} instances on ${rule.pages.length} page${rule.pages.length !== 1 ? 's' : ''}
+                </div>
+            </div>
+            <div id="allViolation${index}" class="violation-content collapsed">
+                <p style="margin: 10px 0; color: #555;">${desc}</p>
+                ${helpUrl ? `<a href="${helpUrl}" target="_blank" rel="noopener noreferrer" class="help-link">Learn more →</a>` : ''}
+                <div class="tags">
+                    ${rule.tags.map((tag) => `<span class="tag">${esc(tag)}</span>`).join('')}
+                </div>
+                <div class="pages-list">
+                    <strong>Pages with this issue (${rule.pages.length}):</strong>
+                    ${rule.pages && rule.pages.length > 0 ? rule.pages.map(page => {
+                        const pageUrl = page.url || page.pageName || 'Unknown page';
+                        const displayUrl = pageUrl || 'Unknown page';
+                        return `
+                        <div class="page-item">
+                            <a href="${esc(pageUrl)}" target="_blank" rel="noopener noreferrer" class="page-url">${esc(displayUrl)}</a>
+                            ${instancesCountMarkup(page, '#menu1')}
+                        </div>`;
+                    }).join('') : '<p style="color: #999; font-style: italic;">No pages available</p>'}
+                </div>
+            </div>
+        </div>`;
+    });
+    html += `</div>`;
+  } else if (incompleteRules.length > 0) {
+    html += `
+        <div class="summary-section" style="background: #fff8e6; border-left: 4px solid #f39c12;">
+            <p><strong>No automated violations</strong> (failed axe checks) were reported on these pages.</p>
+            <p style="margin-top: 8px;">There are still <strong>incomplete</strong> findings below that need manual review.</p>
+        </div>`;
+  } else {
+    html += `
+        <div class="no-issues">
+            ✅ No violations found across all pages!
+        </div>`;
+  }
+  
+  // Incomplete checks section (axe “needs review” bucket) — expanded by default so manual review is visible
+  if (incompleteRules.length > 0) {
+    html += `
+        <div class="section-controls">
+            <button onclick="window.toggleAll('incompleteSection', true)">Expand All</button>
+            <button onclick="window.toggleAll('incompleteSection', false)">Collapse All</button>
+        </div>
+        <h2 class="collapsible-header" onclick="window.toggleSection('incompleteSection')" style="cursor: pointer;">
+            <span><span class="collapse-icon collapsed" id="incompleteIcon">▼</span>🔍 Issues Needing Manual Review</span>
+            <span style="font-size: 0.7em; color: #7f8c8d;">(${incompleteRules.length} issues)</span>
+        </h2>
+        <div id="incompleteSection" class="collapsible-content collapsed" style="padding: 20px 0;">
+            <p style="margin-bottom: 20px;">These incomplete checks require manual verification to determine if they are real issues.</p>`;
+    
+    incompleteRules.forEach((rule, index) => {
+      const isSiteWide = rule.pages.length > totalPages * 0.5;
+      const title = esc(rule.help || rule.id);
+      const desc = esc(rule.description || '');
+      const helpUrl = rule.helpUrl ? esc(rule.helpUrl) : '';
+      html += `
+        <div class="violation-group ${isSiteWide ? 'site-wide' : ''}">
+            <div class="violation-header violation-toggle" onclick="window.toggleViolation('incompleteViolation${index}')" style="cursor: pointer;">
+                <div>
+                    <span class="collapse-icon collapsed" id="incompleteViolation${index}Icon">▼</span>
+                    <span class="violation-title">${title}</span>
+                    ${isSiteWide ? '<span class="site-wide-badge">Site-Wide</span>' : ''}
+                </div>
+                <div class="violation-meta">
+                    ${rule.totalInstances} instances on ${rule.pages.length} page${rule.pages.length !== 1 ? 's' : ''}
+                </div>
+            </div>
+            <div id="incompleteViolation${index}" class="violation-content collapsed">
+                <p style="margin: 10px 0; color: #555;">${desc}</p>
+                ${helpUrl ? `<a href="${helpUrl}" target="_blank" rel="noopener noreferrer" class="help-link">Learn more →</a>` : ''}
+                ${rule.tags && rule.tags.length > 0 ? `
+                <div class="tags">
+                    ${rule.tags.map((tag) => `<span class="tag">${esc(tag)}</span>`).join('')}
+                </div>` : ''}
+                <div class="pages-list">
+                    <strong>Pages needing review (${rule.pages ? rule.pages.length : 0}):</strong>
+                    ${rule.pages && rule.pages.length > 0 ? rule.pages.map(page => {
+                        const pageUrl = page.url || page.pageName || 'Unknown page';
+                        const displayUrl = pageUrl || 'Unknown page';
+                        return `
+                        <div class="page-item">
+                            <a href="${esc(pageUrl)}" target="_blank" rel="noopener noreferrer" class="page-url">${esc(displayUrl)}</a>
+                            ${instancesCountMarkup(page, '#menu2')}
+                        </div>`;
+                    }).join('') : '<p style="color: #999; font-style: italic; padding: 10px;">No pages available</p>'}
+                </div>
+            </div>
+        </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Charts + UI handlers after all sections so a malformed chart payload cannot prevent
+  // violation/incomplete HTML from being parsed (e.g. "</script>" in embedded JSON).
   html += `
     <script>
+(function() {
+    try {
         // Top Violations Chart
         const violationsCtx = document.getElementById('violationsChart').getContext('2d');
         new Chart(violationsCtx, {
             type: 'bar',
             data: {
-                labels: ${JSON.stringify(topViolations.map(v => v.label.length > 30 ? v.label.substring(0, 30) + '...' : v.label))},
+                labels: ${jsonForInlineScript(topViolations.map(v => v.label.length > 30 ? v.label.substring(0, 30) + '...' : v.label))},
                 datasets: [{
                     label: 'Affected Pages',
-                    data: ${JSON.stringify(topViolations.map(v => v.pages))},
+                    data: ${jsonForInlineScript(topViolations.map(v => v.pages))},
                     backgroundColor: 'rgba(231, 76, 60, 0.8)',
                     borderColor: 'rgba(231, 76, 60, 1)',
                     borderWidth: 1
                 }, {
                     label: 'Total Instances',
-                    data: ${JSON.stringify(topViolations.map(v => v.instances))},
+                    data: ${jsonForInlineScript(topViolations.map(v => v.instances))},
                     backgroundColor: 'rgba(243, 156, 18, 0.8)',
                     borderColor: 'rgba(243, 156, 18, 1)',
                     borderWidth: 1
@@ -932,7 +1648,7 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
         
         // Impact Level Distribution Chart
         const impactCtx = document.getElementById('impactChart').getContext('2d');
-        const impactLabels = ${JSON.stringify(Object.keys(impactData))};
+        const impactLabels = ${jsonForInlineScript(Object.keys(impactData))};
         const impactColors = {
             'critical': 'rgba(142, 68, 173, 0.8)',
             'serious': 'rgba(231, 76, 60, 0.8)',
@@ -945,7 +1661,7 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
             data: {
                 labels: impactLabels,
                 datasets: [{
-                    data: ${JSON.stringify(Object.values(impactData))},
+                    data: ${jsonForInlineScript(Object.values(impactData))},
                     backgroundColor: impactLabels.map(label => impactColors[label] || impactColors['unknown']),
                     borderWidth: 2,
                     borderColor: '#fff'
@@ -977,13 +1693,13 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
         new Chart(pagesCtx, {
             type: 'bar',
             data: {
-                labels: ${JSON.stringify(topPages.map(p => {
+                labels: ${jsonForInlineScript(topPages.map(p => {
                   const url = p.url.length > 40 ? p.url.substring(0, 40) + '...' : p.url;
                   return url;
                 }))},
                 datasets: [{
                     label: 'Violation Instances',
-                    data: ${JSON.stringify(topPages.map(p => p.count))},
+                    data: ${jsonForInlineScript(topPages.map(p => p.count))},
                     backgroundColor: 'rgba(52, 152, 219, 0.8)',
                     borderColor: 'rgba(52, 152, 219, 1)',
                     borderWidth: 1
@@ -1040,7 +1756,7 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                     tooltip: {
                         callbacks: {
                             label: function(context) {
-                                const total = ${siteWideCount + pageSpecificCount};
+                                const total = ${Math.max(1, siteWideCount + pageSpecificCount)};
                                 const percentage = ((context.parsed / total) * 100).toFixed(1);
                                 return context.label + ': ' + context.parsed + ' (' + percentage + '%)';
                             }
@@ -1049,17 +1765,18 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                 }
             }
         });
+    } catch (chartErr) {
+        console.warn('Summary charts could not be rendered:', chartErr);
+    }
+})();
     </script>
     <script>
-        // Define collapse/expand functions in head so they're available immediately
         window.toggleSection = function(sectionId) {
-            console.log('toggleSection called with:', sectionId);
             const section = document.getElementById(sectionId);
             const icon = document.getElementById(sectionId + 'Icon');
             if (section) {
                 const isCollapsed = section.classList.contains('collapsed');
                 if (isCollapsed) {
-                    // Remove collapsed class temporarily to measure actual height
                     section.classList.remove('collapsed');
                     section.style.maxHeight = 'none';
                     const height = section.scrollHeight;
@@ -1067,15 +1784,12 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                     if (icon) {
                         icon.classList.remove('collapsed');
                     }
-                    // After transition, set to none to allow all content to be visible
                     setTimeout(function() {
                         section.style.maxHeight = 'none';
                     }, 400);
                 } else {
-                    // Get current height before collapsing
                     const currentHeight = section.scrollHeight;
                     section.style.maxHeight = currentHeight + 'px';
-                    // Force reflow
                     section.offsetHeight;
                     section.classList.add('collapsed');
                     section.style.maxHeight = '0';
@@ -1083,19 +1797,15 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                         icon.classList.add('collapsed');
                     }
                 }
-            } else {
-                console.error('Section not found:', sectionId);
             }
         };
         
         window.toggleViolation = function(violationId) {
-            console.log('toggleViolation called with:', violationId);
             const violation = document.getElementById(violationId);
             const icon = document.getElementById(violationId + 'Icon');
             if (violation) {
                 const isCollapsed = violation.classList.contains('collapsed');
                 if (isCollapsed) {
-                    // Remove collapsed class temporarily to measure actual height
                     violation.classList.remove('collapsed');
                     violation.style.maxHeight = 'none';
                     const height = violation.scrollHeight;
@@ -1103,15 +1813,12 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                     if (icon) {
                         icon.classList.remove('collapsed');
                     }
-                    // After transition, set to auto or large value to allow content to grow
                     setTimeout(function() {
                         violation.style.maxHeight = 'none';
                     }, 400);
                 } else {
-                    // Get current height before collapsing
                     const currentHeight = violation.scrollHeight;
                     violation.style.maxHeight = currentHeight + 'px';
-                    // Force reflow
                     violation.offsetHeight;
                     violation.classList.add('collapsed');
                     violation.style.maxHeight = '0';
@@ -1119,20 +1826,15 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                         icon.classList.add('collapsed');
                     }
                 }
-            } else {
-                console.error('Violation not found:', violationId);
             }
         };
         
         window.toggleAll = function(sectionId, expand) {
-            console.log('toggleAll called with:', sectionId, expand);
             const section = document.getElementById(sectionId);
             if (!section) {
-                console.error('Section not found:', sectionId);
                 return;
             }
             
-            // If expanding, first make sure the section itself is expanded
             if (expand && section.classList.contains('collapsed')) {
                 const sectionIcon = document.getElementById(sectionId + 'Icon');
                 section.classList.remove('collapsed');
@@ -1140,7 +1842,6 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                 if (sectionIcon) {
                     sectionIcon.classList.remove('collapsed');
                 }
-                // Small delay to ensure section is expanded before querying violations
                 setTimeout(function() {
                     toggleViolationsInSection(sectionId, expand);
                 }, 50);
@@ -1154,26 +1855,21 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
             if (!section) return;
             
             const violations = section.querySelectorAll('.violation-content');
-            console.log('Found violations:', violations.length);
             violations.forEach((v) => {
                 const id = v.id;
                 const icon = document.getElementById(id + 'Icon');
                 if (expand) {
-                    // Remove collapsed class and measure actual height
                     v.classList.remove('collapsed');
                     v.style.maxHeight = 'none';
                     const height = v.scrollHeight;
                     v.style.maxHeight = height + 'px';
                     if (icon) icon.classList.remove('collapsed');
-                    // After transition, set to none to allow all content to be visible
                     setTimeout(function() {
                         v.style.maxHeight = 'none';
                     }, 400);
                 } else {
-                    // Get current height before collapsing
                     const currentHeight = v.scrollHeight;
                     v.style.maxHeight = currentHeight + 'px';
-                    // Force reflow
                     v.offsetHeight;
                     v.classList.add('collapsed');
                     v.style.maxHeight = '0';
@@ -1182,172 +1878,6 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
             });
         }
     </script>`;
-  
-  // Site-wide issues section
-  if (siteWideViolations.length > 0) {
-    html += `
-        <div class="section-controls">
-            <button onclick="window.toggleAll('siteWideSection', true)">Expand All</button>
-            <button onclick="window.toggleAll('siteWideSection', false)">Collapse All</button>
-        </div>
-        <h2 class="collapsible-header" onclick="window.toggleSection('siteWideSection')" style="cursor: pointer;">
-            <span><span class="collapse-icon collapsed" id="siteWideIcon">▼</span>🚨 Site-Wide Issues (Affecting >50% of Pages)</span>
-            <span style="font-size: 0.7em; color: #7f8c8d;">(${siteWideViolations.length} issues)</span>
-        </h2>
-        <div id="siteWideSection" class="collapsible-content collapsed" style="padding: 20px 0;">
-            <p style="margin-bottom: 20px; color: #e74c3c; font-weight: bold;">These issues affect most pages and should be fixed first for maximum impact.</p>`;
-    
-    siteWideViolations.forEach((rule, index) => {
-      const impactClass = rule.impact ? `impact-${rule.impact}` : 'impact-moderate';
-      const percentage = Math.round((rule.pages.length / totalPages) * 100);
-      html += `
-        <div class="violation-group site-wide">
-            <div class="violation-header violation-toggle" onclick="window.toggleViolation('siteWideViolation${index}')" style="cursor: pointer;">
-                <div>
-                    <span class="collapse-icon" id="siteWideViolation${index}Icon">▼</span>
-                    <span class="violation-title">${rule.help || rule.id}</span>
-                    <span class="impact-badge ${impactClass}">${rule.impact || 'unknown'}</span>
-                    <span class="site-wide-badge">${percentage}% of pages</span>
-                </div>
-                <div class="violation-meta">
-                    ${rule.totalInstances} total instances across ${rule.pages.length} pages
-                </div>
-            </div>
-            <div id="siteWideViolation${index}" class="violation-content collapsed">
-                <p style="margin: 10px 0; color: #555;">${rule.description}</p>
-                ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
-                <div class="tags">
-                    ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
-                </div>
-                <div class="pages-list">
-                    <strong>Affected Pages (${rule.pages.length}):</strong>
-                    ${rule.pages && rule.pages.length > 0 ? rule.pages.map(page => {
-                        const pageUrl = page.url || page.pageName || 'Unknown page';
-                        const displayUrl = pageUrl || 'Unknown page';
-                        return `
-                        <div class="page-item">
-                            <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
-                            <span class="instances-count">${page.instances || 0} instance${(page.instances || 0) !== 1 ? 's' : ''}</span>
-                        </div>`;
-                    }).join('') : '<p style="color: #999; font-style: italic;">No pages available</p>'}
-                </div>
-            </div>
-        </div>`;
-    });
-    html += `</div>`;
-  }
-  
-  // All violations section
-  if (sortedViolations.length > 0) {
-    html += `
-        <div class="section-controls">
-            <button onclick="window.toggleAll('allViolationsSection', true)">Expand All</button>
-            <button onclick="window.toggleAll('allViolationsSection', false)">Collapse All</button>
-        </div>
-        <h2 class="collapsible-header" onclick="window.toggleSection('allViolationsSection')" style="cursor: pointer;">
-            <span><span class="collapse-icon collapsed" id="allViolationsIcon">▼</span>⚠️ All Violations (Grouped by Issue Type)</span>
-            <span style="font-size: 0.7em; color: #7f8c8d;">(${sortedViolations.length} issues)</span>
-        </h2>
-        <div id="allViolationsSection" class="collapsible-content collapsed" style="padding: 20px 0;">
-            <p style="margin-bottom: 20px;">Pages are grouped by the same accessibility issues. Fixing a common issue once can help multiple pages.</p>`;
-    
-    sortedViolations.forEach((rule, index) => {
-      const isSiteWide = rule.pages.length > totalPages * 0.5;
-      const impactClass = rule.impact ? `impact-${rule.impact}` : 'impact-moderate';
-      html += `
-        <div class="violation-group ${isSiteWide ? 'site-wide' : ''}">
-            <div class="violation-header violation-toggle" onclick="window.toggleViolation('allViolation${index}')" style="cursor: pointer;">
-                <div>
-                    <span class="collapse-icon collapsed" id="allViolation${index}Icon">▼</span>
-                    <span class="violation-title">${rule.help || rule.id}</span>
-                    <span class="impact-badge ${impactClass}">${rule.impact || 'unknown'}</span>
-                    ${isSiteWide ? '<span class="site-wide-badge">Site-Wide</span>' : ''}
-                </div>
-                <div class="violation-meta">
-                    ${rule.totalInstances} instances on ${rule.pages.length} page${rule.pages.length !== 1 ? 's' : ''}
-                </div>
-            </div>
-            <div id="allViolation${index}" class="violation-content collapsed">
-                <p style="margin: 10px 0; color: #555;">${rule.description}</p>
-                ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
-                <div class="tags">
-                    ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
-                </div>
-                <div class="pages-list">
-                    <strong>Pages with this issue (${rule.pages.length}):</strong>
-                    ${rule.pages && rule.pages.length > 0 ? rule.pages.map(page => {
-                        const pageUrl = page.url || page.pageName || 'Unknown page';
-                        const displayUrl = pageUrl || 'Unknown page';
-                        return `
-                        <div class="page-item">
-                            <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
-                            <span class="instances-count">${page.instances || 0} instance${(page.instances || 0) !== 1 ? 's' : ''}</span>
-                        </div>`;
-                    }).join('') : '<p style="color: #999; font-style: italic;">No pages available</p>'}
-                </div>
-            </div>
-        </div>`;
-    });
-    html += `</div>`;
-  } else {
-    html += `
-        <div class="no-issues">
-            ✅ No violations found across all pages!
-        </div>`;
-  }
-  
-  // Incomplete checks section
-  if (sortedIncomplete.length > 0) {
-    html += `
-        <div class="section-controls">
-            <button onclick="window.toggleAll('incompleteSection', true)">Expand All</button>
-            <button onclick="window.toggleAll('incompleteSection', false)">Collapse All</button>
-        </div>
-        <h2 class="collapsible-header" onclick="window.toggleSection('incompleteSection')" style="cursor: pointer;">
-            <span><span class="collapse-icon collapsed" id="incompleteIcon">▼</span>🔍 Issues Needing Manual Review</span>
-            <span style="font-size: 0.7em; color: #7f8c8d;">(${sortedIncomplete.length} issues)</span>
-        </h2>
-        <div id="incompleteSection" class="collapsible-content collapsed" style="padding: 20px 0;">
-            <p style="margin-bottom: 20px;">These issues require manual verification to determine if they are actual problems.</p>`;
-    
-    sortedIncomplete.forEach((rule, index) => {
-      const isSiteWide = rule.pages.length > totalPages * 0.5;
-      html += `
-        <div class="violation-group ${isSiteWide ? 'site-wide' : ''}">
-            <div class="violation-header violation-toggle" onclick="window.toggleViolation('incompleteViolation${index}')" style="cursor: pointer;">
-                <div>
-                    <span class="collapse-icon collapsed" id="incompleteViolation${index}Icon">▼</span>
-                    <span class="violation-title">${rule.help || rule.id}</span>
-                    ${isSiteWide ? '<span class="site-wide-badge">Site-Wide</span>' : ''}
-                </div>
-                <div class="violation-meta">
-                    ${rule.totalInstances} instances on ${rule.pages.length} page${rule.pages.length !== 1 ? 's' : ''}
-                </div>
-            </div>
-            <div id="incompleteViolation${index}" class="violation-content collapsed">
-                <p style="margin: 10px 0; color: #555;">${rule.description}</p>
-                ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
-                ${rule.tags && rule.tags.length > 0 ? `
-                <div class="tags">
-                    ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
-                </div>` : ''}
-                <div class="pages-list">
-                    <strong>Pages needing review (${rule.pages ? rule.pages.length : 0}):</strong>
-                    ${rule.pages && rule.pages.length > 0 ? rule.pages.map(page => {
-                        const pageUrl = page.url || page.pageName || 'Unknown page';
-                        const displayUrl = pageUrl || 'Unknown page';
-                        return `
-                        <div class="page-item">
-                            <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
-                            <span class="instances-count">${page.instances || 0} instance${(page.instances || 0) !== 1 ? 's' : ''}</span>
-                        </div>`;
-                    }).join('') : '<p style="color: #999; font-style: italic; padding: 10px;">No pages available</p>'}
-                </div>
-            </div>
-        </div>`;
-    });
-    html += `</div>`;
-  }
   
   html += `
     </div>
@@ -1378,5 +1908,6 @@ async function accessibilityError(count) {
 module.exports = { 
   a11yValidator,
   a11yValidatorFromUrl,
+  a11yValidatorFromPagesFile,
   generateComprehensiveReport,
 };
