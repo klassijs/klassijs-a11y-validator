@@ -7,7 +7,8 @@
 ## Key Features:
 
 - **Automated Accessibility Testing**: Quickly validates the accessibility of web pages and applications.
-- **Compliance Checks**: Ensures your application meets WCAG 2.0/2.1 guidelines and other accessibility standards.
+- **Website Crawling**: Automatically discovers and tests all pages on a website from a starting URL.
+- **Compliance Checks**: Ensures your application meets WCAG 2.0/2.1/2.2 guidelines and other accessibility standards.
 - **Detailed Reporting**: Provides detailed reports on accessibility issues found during validation.
 - **Customizable Rules**: Customize which accessibility rules you want to check based on your project's needs.
 - **Integration Ready**: Easily integrate into your CI/CD pipelines for continuous accessibility validation.
@@ -22,9 +23,205 @@ You can easily install the **a11y-validator** using **pnpm**. Follow the steps b
    pnpm add klassijs-a11y-validator
    ```
 
+### Additional Dependencies for Browser Automation
+
+To run tests on real websites, you'll also need WebdriverIO and a browser driver:
+
+```bash
+# Install WebdriverIO
+pnpm add -D @wdio/cli webdriverio
+
+# For Chrome (recommended)
+pnpm add -D chromedriver
+
+# OR for Firefox
+pnpm add -D geckodriver
+```
+
+## Quick Start - Testing a Real Website
+
+The runner in `src/run-a11y-test.js` now supports four modes:
+- Crawl and test an entire site from a start URL
+- Crawl-only (discover pages without accessibility checks)
+- Test specific page(s) only (single URL, comma list, or file list)
+- Discover pages from XML sitemaps and test them
+
+For `crawl` and `crawl-only`, discovery now works as:
+1. Try sitemap discovery first (`robots.txt` sitemap entries, then `/sitemap.xml`)
+2. If no sitemap pages are found, fall back to normal on-page link crawling
+
+```bash
+# 1) Crawl and test from a start URL
+node src/run-a11y-test.js https://example.com
+
+# 2) Crawl-only (discover pages, skip a11y tests)
+node src/run-a11y-test.js https://example.com --crawl-only
+
+# 3) Test specific pages only (no crawling)
+node src/run-a11y-test.js https://example.com --pages /,/about,/contact
+
+# Auth (optional): use login + credentials for private pages
+node src/run-a11y-test.js https://example.com \
+  --login-url https://example.com/login \
+  --username test-user \
+  --password test-pass
+
+# 4) Test pages from file (`.txt` or `.csv`)
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.txt
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv
+
+# 5) CSV: ignore columns by header name or zero-based index
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns notes,status
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns 2,3
+
+# 6) Discover pages from sitemap(s) and test them
+node src/run-a11y-test.js --from-sitemap https://example.com
+node src/run-a11y-test.js --from-sitemap --base-url https://example.com --sitemap-url https://example.com/sitemap.xml
+
+# 7) Override rule selection from CLI
+node src/run-a11y-test.js https://example.com --include-tags wcag2aa,wcag21aa
+node src/run-a11y-test.js https://example.com --exclude-tags best-practice
+node src/run-a11y-test.js https://example.com --exclude-rules color-contrast,image-alt
+
+# 8) Experimental-only run (recommended as non-blocking signal)
+node src/run-a11y-test.js https://example.com --include-tags experimental
+```
+
+### NPM Scripts
+
+The package provides scripts for each mode:
+
+```bash
+# Crawl and test
+pnpm a11y:crawl https://example.com
+
+# Crawl only
+pnpm a11y:crawl-only https://example.com
+
+# Specific page(s)
+pnpm a11y:pages https://example.com/about
+node src/run-a11y-test.js --base-url https://example.com --pages /,/about,/contact
+
+# Pages from file
+pnpm a11y:pages-file ./pages.txt
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.txt
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./pages.csv --csv-ignore-columns notes,status
+
+# From sitemap
+node src/run-a11y-test.js --from-sitemap https://example.com
+node src/run-a11y-test.js --from-sitemap --base-url https://example.com --sitemap-url https://example.com/sitemap.xml
+
+# Auth examples (optional)
+pnpm a11y:crawl https://example.com --login-url https://example.com/login --username test-user --password test-pass
+
+# Experimental-only signal run (do not block pipeline)
+pnpm a11y:experimental https://example.com || true
+
+# Generate manual review checklist from latest summary
+pnpm a11y:manual-checklist
+
+# Generate locale/page-type coverage report
+node src/report-coverage-by-page-type.js --inventory ./examples/page-inventory/en.csv
+```
+
+`pages.txt` and `pages.csv` support:
+- One URL or path per line
+- Blank lines
+- Comments starting with `#`
+
+For CSV files, you can ignore columns with:
+- `--csv-ignore-columns notes,status` (header names)
+- `--csv-ignore-columns 2,3` (zero-based indexes)
+
+Example:
+
+```txt
+# Relative paths
+/
+/about
+/contact
+
+# Absolute URL also works
+https://example.com/pricing
+```
+
+CSV example:
+
+```csv
+url,path
+https://example.com/pricing,/about
+/contact,
+```
+
 ## Usage
 
-Here’s a guide on how to use the **a11y-validator** to check the accessibility of a webpage or application:
+You can use the validator via:
+- The CLI runner (`src/run-a11y-test.js`) for real-site automation
+- The API (`a11yValidator` / `a11yValidatorFromUrl`) inside your own scripts
+
+### CLI Runner Modes (`src/run-a11y-test.js`)
+
+#### 1) Crawl and test a whole site
+
+```bash
+node src/run-a11y-test.js https://yourwebsite.com
+```
+
+This mode:
+- Crawls internal pages from the start URL
+- Runs accessibility checks on discovered pages
+- Generates reports in the reports directory
+- Uses sitemap-first discovery with crawler fallback automatically
+
+#### 2) Crawl-only (discover pages only)
+
+```bash
+node src/run-a11y-test.js https://yourwebsite.com --crawl-only
+# OR
+CRAWL_ONLY=true node src/run-a11y-test.js https://yourwebsite.com
+```
+
+This mode:
+- Crawls and lists discoverable pages
+- Skips accessibility checks
+- Helps verify coverage before full testing
+- Uses sitemap-first discovery with crawler fallback automatically
+
+#### 3) Test only specific pages (no crawling)
+
+```bash
+# Single explicit page
+node src/run-a11y-test.js --pages https://yourwebsite.com/about
+
+# Multiple pages using paths (with base URL)
+node src/run-a11y-test.js https://yourwebsite.com --pages /,/about,/contact
+# OR
+node src/run-a11y-test.js --base-url https://yourwebsite.com --pages /,/about,/contact
+
+# From file
+node src/run-a11y-test.js --base-url https://yourwebsite.com --pages-file ./pages.txt
+node src/run-a11y-test.js --base-url https://yourwebsite.com --pages-file ./pages.csv
+```
+
+Use this mode when you only want to validate selected pages instead of the full site.
+
+#### 4) Test pages discovered from sitemaps
+
+```bash
+# Use robots.txt -> Sitemap directives (fallback to /sitemap.xml)
+node src/run-a11y-test.js --from-sitemap https://yourwebsite.com
+
+# Provide one or more sitemap URLs directly (comma-separated)
+node src/run-a11y-test.js --from-sitemap --base-url https://yourwebsite.com --sitemap-url https://yourwebsite.com/sitemap.xml,https://yourwebsite.com/sitemap-posts.xml
+```
+
+This mode:
+- Discovers URLs from XML sitemap files (including sitemap indexes)
+- Filters to the same domain as `--base-url` (or the positional URL)
+- Tests discovered pages using the same report pipeline as other test modes
+
+### Single Page Validation
 
 1. **Import the Tool**:
    Import the `a11y-validator` module into your project:
@@ -32,53 +229,353 @@ Here’s a guide on how to use the **a11y-validator** to check the accessibility
    const { a11yValidator } = require('klassijs-a11y-validator');
    ```
 
-2. **Run Accessibility Validation**:
-   Use the `validate` method to check a URL or HTML file for accessibility issues:
+2. **Run Accessibility Validation on Current Page**:
+   The `a11yValidator` function validates the page that the browser is currently on:
    ```javascript
-   async function runA11yValidation() {
+   // Make sure browser is already navigated to the page
+   await browser.url('https://yourwebsite.com');
+   
+   // Run validation
+   await a11yValidator('home-page', true);
+   ```
+
+### Multi-Page Validation from URL
+
+1. **Import the URL Validator**:
+   ```javascript
+   const { a11yValidatorFromUrl } = require('klassijs-a11y-validator');
+   ```
+
+2. **Run Accessibility Validation on Entire Website**:
+   ```javascript
+   async function validateEntireWebsite() {
        try {
-           const results = await a11yValidator('https://yourwebsite.com');
-           console.log('Accessibility Validation Results:', results);
+           // Make sure browser is initialized before calling
+           const results = await a11yValidatorFromUrl('https://yourwebsite.com', {
+               maxPages: 50,        // Maximum pages to crawl (default: 50)
+               maxDepth: 3,          // Maximum crawl depth (default: 3)
+               excludePaths: ['/admin', '/api'], // Paths to exclude
+               count: true,          // Include total error count (default: true)
+               // Accessibility rule configuration (optional):
+               excludeTags: [],      // Exclude WCAG tags (e.g., ['wcag22aa', 'best-practice'])
+               excludeRules: [],     // Exclude specific rules (e.g., ['color-contrast'])
+               includeTags: null    // Only check specific tags (overrides defaults)
+           });
+           
+           console.log(`Tested ${results.pagesTested} pages`);
+           console.log(`Found ${results.totalErrors} total accessibility errors`);
+           console.log(`Pages with errors: ${results.errors.length}`);
        } catch (error) {
            console.error('Error during accessibility validation:', error);
        }
    }
 
-   runA11yValidation();
+   validateEntireWebsite();
    ```
 
-   The `validate` method will return a detailed report containing any accessibility issues, such as missing alt text, color contrast problems, and other violations of accessibility guidelines.
+   The `a11yValidatorFromUrl` function will:
+- Crawl the website starting from the provided URL
+- Discover internal pages using sitemap-first discovery (robots.txt sitemap entries + common sitemap locations), with crawler fallback if no sitemap URLs are found
+   - Test each discovered page for accessibility issues
+   - Generate individual reports for each page
+   - Return a summary of all results
 
-3. **Review the Report**:
-   The results will typically contain details such as:
-    - The issue description
-    - The severity level (e.g., critical, moderate, minor)
-    - The location of the issue (e.g., the affected element)
-    - Recommended fixes or actions
+3. **Review the Reports**:
+   The results will contain:
+    - **Individual HTML/JSON reports** for each page tested (saved to reports directory)
+    - **Summary object** with:
+      - Total pages discovered and tested
+      - Total accessibility errors found
+      - List of pages with errors
+      - Error count per page
+    - Each report includes:
+      - Issue descriptions
+      - Severity levels (critical, serious, moderate, minor)
+      - Affected elements
+      - Recommended fixes
 
 
 ## Configuration
 
-You can customize the behavior of **a11y-validator** by providing various options when initializing the validator.
+### Multi-Page Validation From Pages File (.txt / .csv)
 
-### Custom Rules
+If you want to test a specific list of pages (instead of crawling a whole site), use `a11yValidatorFromPagesFile`.
 
-You can customize which accessibility rules to check, based on your project's needs. Here's how to pass custom rules:
+It supports:
+- `.txt`: one URL or relative path per line
+- `.csv`: URL/path in the first usable column (optionally ignore columns via `csvIgnoreColumns`)
 
+Example:
 ```javascript
-const validator = new a11yValidator({
-    rules: ['alt-text', 'color-contrast', 'heading-order']
+const { a11yValidatorFromPagesFile } = require('klassijs-a11y-validator');
+
+// Make sure `global.browser` is initialized before calling this.
+await a11yValidatorFromPagesFile('./pages.csv', {
+  baseUrl: 'https://example.com', // required if your CSV/TXT contains relative paths
+  csvIgnoreColumns: ['pagetype'], // or ['2', '3'] / ['1'] depending on your file
+  maxPagesToTest: null, // null = test all entries
+  auth: null, // optional auth config
+  excludeTags: [],
+  excludeRules: [],
+  includeTags: null,
 });
 ```
 
-### Timeout
+### Accessibility Rule Configuration
 
-If you need to adjust the timeout for validation, you can configure it as follows:
+You can customize which accessibility standards and rules are checked:
 
 ```javascript
-const validator = new a11yValidator({
-    timeout: 5000 // Timeout in milliseconds
+await a11yValidatorFromUrl('https://yourwebsite.com', {
+    // Exclude specific WCAG standards
+    excludeTags: ['wcag22aa', 'best-practice'],  // Exclude WCAG 2.2 Level AA and best practices
+    
+    // Exclude specific rules
+    excludeRules: ['color-contrast', 'image-alt'],  // Exclude color contrast and image alt checks
+    
+    // Only check specific standards (overrides defaults)
+    includeTags: ['wcag2a', 'wcag2aa'],  // Only check WCAG 2.0 Level A and AA
 });
+```
+
+**Available WCAG Tags:**
+- `wcag2a` - WCAG 2.0 Level A
+- `wcag2aa` - WCAG 2.0 Level AA
+- `wcag2aaa` - WCAG 2.0 Level AAA
+- `wcag21a` - WCAG 2.1 Level A
+- `wcag21aa` - WCAG 2.1 Level AA
+- `wcag21aaa` - WCAG 2.1 Level AAA
+- `wcag22a` - WCAG 2.2 Level A
+- `wcag22aa` - WCAG 2.2 Level AA
+- `wcag22aaa` - WCAG 2.2 Level AAA
+- `best-practice` - Additional best practices
+
+**Default Configuration:**
+By default, the tool runs all available axe rules and excludes only rules tagged `experimental`.
+This provides broad automated coverage; manual review is still required for criteria that cannot be fully automated.
+
+This default also includes rule/tag families such as:
+
+- `section508`
+- `section508.22.a` ... `section508.22.p` (legacy mapping tags)
+- `EN-301-549`
+- `ACT`
+- `cat.*` category tags (for example `cat.color`, `cat.keyboard`, `cat.text-alternatives`, `cat.aria`, `cat.forms`, `cat.name-role-value`)
+
+**Example: Check only WCAG 2.1 Level AA:**
+```javascript
+await a11yValidatorFromUrl('https://yourwebsite.com', {
+    includeTags: ['wcag21aa']
+});
+```
+
+**Example: Exclude color contrast checks:**
+```javascript
+await a11yValidatorFromUrl('https://yourwebsite.com', {
+    excludeRules: ['color-contrast']
+});
+```
+
+### CLI Rule Overrides
+
+`src/run-a11y-test.js` supports optional flags:
+
+- `--include-tags <csv>` (example: `wcag2aa,wcag21aa`)
+- `--exclude-tags <csv>`
+- `--exclude-rules <csv>`
+
+Environment variable equivalents:
+
+- `A11Y_INCLUDE_TAGS`
+- `A11Y_EXCLUDE_TAGS`
+- `A11Y_EXCLUDE_RULES`
+
+When `--include-tags` is not provided, defaults apply (all non-experimental rules).
+
+## Enterprise / Global Readiness
+
+### 1) Manual review process for non-automatable criteria
+
+Generate a checklist from the latest comprehensive summary:
+
+```bash
+pnpm a11y:manual-checklist
+```
+
+Output:
+- `reports/manual-a11y-review.md`
+
+### 2) Locale/language/template coverage
+
+Use explicit page inventories per locale:
+
+- `examples/page-inventory/en.csv`
+- `examples/page-inventory/es.csv`
+- `examples/page-inventory/ar.csv`
+
+Run by file:
+
+```bash
+node src/run-a11y-test.js --base-url https://example.com --pages-file ./examples/page-inventory/en.csv
+```
+
+### 3) Experimental checks as non-blocking signal
+
+Keep defaults in blocking runs. Run experimental separately as signal only:
+
+```bash
+pnpm a11y:experimental https://example.com || true
+```
+
+### 4) Coverage tracking by page type
+
+Generate coverage report from inventory + latest summary:
+
+```bash
+node src/report-coverage-by-page-type.js --inventory ./examples/page-inventory/en.csv
+```
+
+Output:
+- `reports/coverage/page-type-coverage.json`
+
+### Axe Rule Reference
+
+Official axe rule catalog (maintained by Deque):
+
+- [axe-core rule descriptions](https://github.com/dequelabs/axe-core/blob/develop/doc/rule-descriptions.md)
+
+To print the exact rule IDs available in your installed axe-core version:
+
+```javascript
+const axe = require('axe-core');
+console.log(axe.getRules().map((rule) => rule.ruleId));
+```
+
+### Crawler Options
+
+When using `a11yValidatorFromUrl`, you can customize the crawling behavior:
+
+```javascript
+await a11yValidatorFromUrl('https://yourwebsite.com', {
+    maxPages: 100,              // Maximum number of pages to crawl (default: 50)
+    maxDepth: 5,                 // Maximum depth to crawl from starting URL (default: 3)
+    excludePaths: [              // Paths to exclude from crawling
+        '/admin',
+        '/api',
+        '/private'
+    ],
+    // Link crawl runs first by default; set true to load URLs from sitemap/robots before crawling.
+    sitemapFirst: false,         // set to true to use sitemap discovery first (capped by maxPages)
+    sitemapUrl: null,           // optional single sitemap URL
+    sitemapUrls: null,          // optional array of sitemap URLs
+    maxPagesToTest: 5,           // Limit how many pages to test (default: null = test all)
+                                  // Useful for quick checks: discover all pages but only test a few
+    count: true                   // Include total error count in output (default: true)
+});
+```
+
+**Example: Quick Check (Discover All, Test Only 5)**
+```javascript
+// Discover all 83 pages, but only test 5 of them for a quick check
+await a11yValidatorFromUrl('https://yourwebsite.com', {
+    maxPages: null,        // Discover all pages
+    maxPagesToTest: 5,     // But only test 5 pages
+});
+```
+
+### Browser Requirements
+
+The validator requires a browser instance to be available globally. Make sure you have initialized your browser automation framework (e.g., WebdriverIO) before calling the validator functions:
+
+```javascript
+// Example with WebdriverIO
+const { remote } = require('webdriverio');
+
+(async () => {
+    global.browser = await remote({
+        capabilities: { browserName: 'chrome' }
+    });
+    
+    // Now you can use the validator
+    await a11yValidatorFromUrl('https://yourwebsite.com');
+    
+    await browser.deleteSession();
+})();
+```
+
+### Authentication (Optional)
+
+`src/run-a11y-test.js` can authenticate before crawling/testing when you pass login info.
+
+CLI flags:
+- `--login-url <url>`
+- `--username <username>`
+- `--password <password>`
+
+Environment variables (also supported):
+- `LOGIN_URL`
+- `A11Y_USERNAME`
+- `A11Y_PASSWORD`
+
+Example:
+```bash
+pnpm a11y:crawl https://example.com \
+  --login-url https://example.com/login \
+  --username test-user \
+  --password test-pass
+```
+
+Note: `src/run-a11y-test-with-auth.js` is still present as a standalone example, but the recommended approach is to use `src/run-a11y-test.js` with the auth flags above.
+
+## Troubleshooting
+
+### Quick Decision Tree
+
+- If you get `EACCES` or `permission denied`: set `CACHE_DIR=~/.webdriverio-cache` and retry.
+- If Chrome driver fails to start: use `BROWSER=safari` on macOS for a quick unblock.
+- If Safari is not an option: install driver manually (`brew install chromedriver` or `brew install geckodriver`), then verify with `which`.
+- If issues persist: clear caches (`rm -rf /tmp/chromedriver* ~/.webdriverio-cache`) and run again.
+
+### Browser Driver / Permission Errors
+
+If you see errors such as `EACCES`, `permission denied`, or chromedriver/geckodriver executable issues:
+
+```bash
+# Use a user-writable cache directory
+CACHE_DIR=~/.webdriverio-cache node src/run-a11y-test.js https://example.com
+
+# Or export it for your session
+export CACHE_DIR=~/.webdriverio-cache
+node src/run-a11y-test.js https://example.com
+```
+
+If Chrome setup is problematic on macOS, use Safari (no extra driver install required):
+
+```bash
+BROWSER=safari node src/run-a11y-test.js https://example.com
+```
+
+Or install a browser driver manually:
+
+```bash
+# Chrome
+brew install chromedriver
+
+# Firefox
+brew install geckodriver
+```
+
+Useful checks:
+
+```bash
+which chromedriver
+which geckodriver
+```
+
+If you still have temp/cache issues, clean old driver caches and retry:
+
+```bash
+rm -rf /tmp/chromedriver* ~/.webdriverio-cache
 ```
 
 ## Contributing

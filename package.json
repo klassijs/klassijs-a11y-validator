@@ -19,14 +19,28 @@
   ],
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest --runInBand",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage --runInBand",
+    "a11y:crawl": "node src/run-a11y-test.js",
+    "a11y:crawl-only": "node src/run-a11y-test.js --crawl-only",
+    "a11y:pages": "node src/run-a11y-test.js --pages",
+    "a11y:pages-file": "node src/run-a11y-test.js --pages-file",
+    "a11y:experimental": "node src/run-a11y-test.js --include-tags experimental",
+    "a11y:manual-checklist": "node src/generate-manual-review-checklist.js",
+    "a11y:coverage-by-type": "node src/report-coverage-by-page-type.js --inventory ./examples/page-inventory/en.csv"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/klassijs/klassijs-a11y-validator.git"
   },
   "dependencies": {
-    "axe-core": "^4.10.2",
-    "dotenv": "^16.4.5"
+    "axe-core": "^4.11.1",
+    "dotenv": "^16.6.1",
+    "klassijs-astellen": "^1.0.1",
+    "webdriverio": "^9.23.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   }
 }
