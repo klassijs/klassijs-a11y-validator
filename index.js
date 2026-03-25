@@ -14,6 +14,68 @@ if (fs.existsSync(accessibility_lib)) {
   global.accessibilityReportList = rList;
 } else console.error('No Accessibility Lib');
 
+/**
+ * Axe returns arrays; guard against odd serialization (object keyed by index).
+ */
+function normalizeAxeRuleArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object') return Object.values(value);
+  return [];
+}
+
+/**
+ * Resolve directories that contain per-page JSON/HTML for this run.
+ * Prefer paths recorded when reports were written (matches browser folder name exactly).
+ */
+function resolveAccessibilityReportsDirs(reportsDir, browserName, envName) {
+  const list = global.accessibilityReportList;
+  const dirs = new Set();
+  if (Array.isArray(list) && list.length > 0) {
+    list.forEach((entry) => {
+      if (entry && entry.path) {
+        const dir = path.dirname(entry.path);
+        if (dir) dirs.add(dir);
+      }
+    });
+  }
+  if (dirs.size > 0) {
+    return Array.from(dirs).filter((d) => fs.existsSync(d));
+  }
+
+  const envLower = String(envName || 'test').toLowerCase();
+  const fallback = path.join(reportsDir, 'accessibility', browserName, envLower);
+  if (fs.existsSync(fallback)) {
+    return [fallback];
+  }
+
+  const base = path.join(reportsDir, 'accessibility');
+  if (!fs.existsSync(base)) {
+    return [fallback];
+  }
+
+  const found = [];
+  for (const d of fs.readdirSync(base, { withFileTypes: true })) {
+    if (!d.isDirectory()) continue;
+    const candidate = path.join(base, d.name, envLower);
+    if (fs.existsSync(candidate)) {
+      const jsonCount = fs.readdirSync(candidate).filter((f) => f.endsWith('.json')).length;
+      if (jsonCount > 0) found.push(candidate);
+    }
+  }
+  return found.length > 0 ? found : [fallback];
+}
+
+function getBrowserNameForReportPath() {
+  try {
+    const { astellen } = require('klassijs-astellen');
+    const b = astellen.get('BROWSER_NAME');
+    if (b) return String(b);
+  } catch (_e) {
+    /* klassijs-astellen optional in some consumers */
+  }
+  return global.browserName ? String(global.browserName) : 'chrome';
+}
+
 function getLegacySinglePageSummaryState() {
   if (!global.__a11yLegacySinglePageSummaryState) {
     global.__a11yLegacySinglePageSummaryState = {
@@ -849,7 +911,8 @@ async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
   const totalDurationMs = totalEndTime - fileStartTime;
   const totalDuration = formatDuration(totalDurationMs);
 
-  if (results.testedPages.length > 1) {
+  // Match crawl-based flow: generate summary whenever at least one page was tested (not only when >1).
+  if (results.testedPages.length > 0) {
     await generateComprehensiveReport(results, domain, crawlDuration, totalDuration);
   }
 
@@ -868,59 +931,63 @@ async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
 async function generateComprehensiveReport(results, domain, crawlDuration, totalDuration) {
   try {
     const envName = global.env?.envName?.toLowerCase() || 'test';
-    const browserName = global.browserName || 'chrome';
+    const browserName = getBrowserNameForReportPath();
     const reportsDir = global.paths?.reports || './reports';
     const summaryDir = `${reportsDir}/summary`;
-    const accessibilityReportsDir = `${reportsDir}/accessibility/${browserName}/${envName}`;
-    
-    // Check if accessibility reports directory exists
-    if (!fs.existsSync(accessibilityReportsDir)) {
-      console.warn('No accessibility reports found. Skipping comprehensive summary generation.');
+    const accessibilityReportsDirs = resolveAccessibilityReportsDirs(reportsDir, browserName, envName);
+
+    const reportFilePaths = [];
+    accessibilityReportsDirs.forEach((dir) => {
+      if (!fs.existsSync(dir)) return;
+      fs.readdirSync(dir)
+        .filter((f) => f.endsWith('.json'))
+        .forEach((f) => reportFilePaths.push(path.join(dir, f)));
+    });
+
+    const uniqueReportPaths = [...new Set(reportFilePaths)];
+
+    if (uniqueReportPaths.length === 0) {
+      console.warn(
+        'No accessibility JSON reports found (check reports path and browser/env folder). Skipping comprehensive summary generation.'
+      );
       return;
     }
-    
+
     // Create summary directory if it doesn't exist
     if (!fs.existsSync(summaryDir)) {
       fs.mkdirSync(summaryDir, { recursive: true });
     }
-    
+
     // Read all individual page reports
     const pageReports = [];
-    const reportFiles = fs.readdirSync(accessibilityReportsDir).filter(file => file.endsWith('.json'));
-    
-    if (reportFiles.length === 0) {
-      console.warn('No JSON report files found. Skipping comprehensive summary generation.');
-      return;
-    }
-    
     const summaryDirAbs = path.resolve(summaryDir);
 
-    for (const file of reportFiles) {
+    for (const filePath of uniqueReportPaths) {
       try {
-        const filePath = path.join(accessibilityReportsDir, file);
+        const file = path.basename(filePath);
+        const reportDir = path.dirname(filePath);
         const reportData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        
-        // Extract page name from filename
+
+        // Extract page name from filename (same convention as accessibilityLib)
         const pageName = file.replace(`-${browserName}_`, '_').replace('.json', '');
         const pageUrl = reportData.url || '';
 
-        const pageHtmlFile = file.replace(/\.json$/i, '.html');
-        const pageHtmlAbs = path.resolve(accessibilityReportsDir, pageHtmlFile);
+        const pageHtmlAbs = path.join(reportDir, file.replace(/\.json$/i, '.html'));
         const localReportHref = fs.existsSync(pageHtmlAbs)
           ? path.relative(summaryDirAbs, pageHtmlAbs).split(path.sep).join('/')
           : null;
-        
+
         pageReports.push({
           pageName,
           url: pageUrl,
           localReportHref,
-          violations: reportData.violations || [],
-          incomplete: reportData.incomplete || [],
-          passes: reportData.passes || [],
-          inapplicable: reportData.inapplicable || [],
+          violations: normalizeAxeRuleArray(reportData.violations),
+          incomplete: normalizeAxeRuleArray(reportData.incomplete),
+          passes: normalizeAxeRuleArray(reportData.passes),
+          inapplicable: normalizeAxeRuleArray(reportData.inapplicable),
         });
       } catch (e) {
-        console.warn(`Could not read report file ${file}: ${e.message}`);
+        console.warn(`Could not read report file ${filePath}: ${e.message}`);
       }
     }
     
@@ -962,7 +1029,7 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
       
       // Process incomplete checks
       pageReport.incomplete.forEach(incomplete => {
-        const ruleId = incomplete.id;
+        const ruleId = incomplete.id != null ? incomplete.id : '__unknown_rule__';
         if (!incompleteByRule[ruleId]) {
           incompleteByRule[ruleId] = {
             id: ruleId,
