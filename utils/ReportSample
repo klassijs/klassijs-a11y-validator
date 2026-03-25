@@ -257,6 +257,14 @@ document.getElementsByName("InapplicableReport")[0].innerHTML=testdata(data.inap
 summaryView(data);
 summaryData(data.testEnvironment,data);
 browserInfo(browserData);
+
+(function() {
+  var h = window.location.hash;
+  if (h && /^#(home|menu[1-4])$/.test(h) && typeof $ !== 'undefined') {
+    var $link = $('a[href="' + h + '"]');
+    if ($link.length) { $link.tab('show'); }
+  }
+})();
 </script>
     
 </body>

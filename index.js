@@ -1061,14 +1061,27 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
 
 /**
  * Renders the instance count as a link to the per-page HTML report when available.
+ * @param {string} [hashFragment] - e.g. '#menu2' for Incomplete (must match utils/ReportSample tab ids)
  */
-function instancesCountMarkup(page) {
+function instancesCountMarkup(page, hashFragment) {
   const n = page.instances || 0;
   const label = `${n} instance${n !== 1 ? 's' : ''}`;
   const href = page.localReportHref;
   if (href) {
     const safeHref = href.split('/').map(encodeURIComponent).join('/');
-    return `<a href="${safeHref}" class="instances-count instances-count-link" title="Open full page report">${label}</a>`;
+    const hash =
+      hashFragment && String(hashFragment).trim() !== ''
+        ? String(hashFragment).startsWith('#')
+          ? hashFragment
+          : `#${hashFragment}`
+        : '';
+    const title =
+      hash === '#menu2'
+        ? 'Open full page report (Incomplete tab)'
+        : hash === '#menu1'
+          ? 'Open full page report (Violations tab)'
+          : 'Open full page report';
+    return `<a href="${safeHref}${hash}" class="instances-count instances-count-link" title="${title}">${label}</a>`;
   }
   return `<span class="instances-count">${label}</span>`;
 }
@@ -1693,7 +1706,7 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                         return `
                         <div class="page-item">
                             <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
-                            ${instancesCountMarkup(page)}
+                            ${instancesCountMarkup(page, '#menu2')}
                         </div>`;
                     }).join('') : '<p style="color: #999; font-style: italic; padding: 10px;">No pages available</p>'}
                 </div>
