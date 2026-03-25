@@ -44,6 +44,33 @@ function jsonForInlineScript(value) {
 }
 
 /**
+ * Prefer JSON files that pair 1:1 with HTML paths recorded during this run (avoids merging stale reports
+ * left in the accessibility folder from older runs).
+ */
+function collectJsonPathsFromAccessibilityReportList() {
+  const list = global.accessibilityReportList;
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const paths = new Set();
+  for (const entry of list) {
+    if (!entry || !entry.path) continue;
+    const jsonPath = String(entry.path).replace(/\.html$/i, '.json');
+    if (fs.existsSync(jsonPath)) paths.add(path.resolve(jsonPath));
+  }
+  return paths.size > 0 ? [...paths] : null;
+}
+
+/**
+ * Axe uses `incomplete`; tolerate alternate shapes if a wrapper ever changes the payload.
+ */
+function extractIncompleteFromReport(reportData) {
+  const raw =
+    reportData.incomplete ??
+    reportData.incompleteResults ??
+    reportData.incompleteChecks;
+  return normalizeAxeRuleArray(raw);
+}
+
+/**
  * Resolve directories that contain per-page JSON/HTML for this run.
  * Prefer paths recorded when reports were written (matches browser folder name exactly).
  */
@@ -956,15 +983,17 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
     const summaryDir = `${reportsDir}/summary`;
     const accessibilityReportsDirs = resolveAccessibilityReportsDirs(reportsDir, browserName, envName);
 
-    const reportFilePaths = [];
-    accessibilityReportsDirs.forEach((dir) => {
-      if (!fs.existsSync(dir)) return;
-      fs.readdirSync(dir)
-        .filter((f) => f.endsWith('.json'))
-        .forEach((f) => reportFilePaths.push(path.join(dir, f)));
-    });
-
-    const uniqueReportPaths = [...new Set(reportFilePaths)];
+    let uniqueReportPaths = collectJsonPathsFromAccessibilityReportList();
+    if (!uniqueReportPaths || uniqueReportPaths.length === 0) {
+      const reportFilePaths = [];
+      accessibilityReportsDirs.forEach((dir) => {
+        if (!fs.existsSync(dir)) return;
+        fs.readdirSync(dir)
+          .filter((f) => f.endsWith('.json'))
+          .forEach((f) => reportFilePaths.push(path.join(dir, f)));
+      });
+      uniqueReportPaths = [...new Set(reportFilePaths)];
+    }
 
     if (uniqueReportPaths.length === 0) {
       console.warn(
@@ -1002,7 +1031,7 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
           url: pageUrl,
           localReportHref,
           violations: normalizeAxeRuleArray(reportData.violations),
-          incomplete: normalizeAxeRuleArray(reportData.incomplete),
+          incomplete: extractIncompleteFromReport(reportData),
           passes: normalizeAxeRuleArray(reportData.passes),
           inapplicable: normalizeAxeRuleArray(reportData.inapplicable),
         });
@@ -1015,68 +1044,77 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
     const violationsByRule = {};
     const incompleteByRule = {};
     
-    pageReports.forEach(pageReport => {
-      // Process violations
-      pageReport.violations.forEach(violation => {
-        const ruleId = violation.id;
-        if (!violationsByRule[ruleId]) {
-          violationsByRule[ruleId] = {
-            id: ruleId,
-            description: violation.description,
-            help: violation.help,
-            helpUrl: violation.helpUrl,
-            impact: violation.impact,
-            tags: violation.tags || [],
-            pages: [],
-            totalInstances: 0,
-          };
-        }
-        
-        const instanceCount = violation.nodes?.length || 0;
-        // Ensure we have a valid URL or pageName
-        const pageUrl = pageReport.url || pageReport.pageName || '';
-        if (pageUrl) {
-          violationsByRule[ruleId].pages.push({
+    pageReports.forEach((pageReport) => {
+      try {
+        // Process violations
+        pageReport.violations.forEach((violation) => {
+          if (!violation || typeof violation !== 'object') return;
+          const ruleId = violation.id;
+          if (!violationsByRule[ruleId]) {
+            violationsByRule[ruleId] = {
+              id: ruleId,
+              description: violation.description,
+              help: violation.help,
+              helpUrl: violation.helpUrl,
+              impact: violation.impact,
+              tags: violation.tags || [],
+              pages: [],
+              totalInstances: 0,
+            };
+          }
+
+          const instanceCount = violation.nodes?.length || 0;
+          const pageUrl = pageReport.url || pageReport.pageName || '';
+          if (pageUrl) {
+            violationsByRule[ruleId].pages.push({
+              url: pageUrl,
+              pageName: pageReport.pageName || pageUrl,
+              instances: instanceCount,
+              nodes: violation.nodes || [],
+              localReportHref: pageReport.localReportHref,
+            });
+            violationsByRule[ruleId].totalInstances += instanceCount;
+          }
+        });
+
+        // Process incomplete checks (axe "manual review" bucket only)
+        pageReport.incomplete.forEach((incomplete) => {
+          if (!incomplete || typeof incomplete !== 'object') return;
+          const ruleId = incomplete.id != null ? incomplete.id : '__unknown_rule__';
+          if (!incompleteByRule[ruleId]) {
+            incompleteByRule[ruleId] = {
+              id: ruleId,
+              description: incomplete.description,
+              help: incomplete.help,
+              helpUrl: incomplete.helpUrl,
+              impact: incomplete.impact,
+              tags: incomplete.tags || [],
+              pages: [],
+              totalInstances: 0,
+            };
+          }
+
+          const instanceCount = incomplete.nodes?.length || 0;
+          const pageUrl = pageReport.url || pageReport.pageName || 'Unknown page';
+          const pageName = pageReport.pageName || pageUrl || 'Unknown page';
+          incompleteByRule[ruleId].pages.push({
             url: pageUrl,
-            pageName: pageReport.pageName || pageUrl,
+            pageName: pageName,
             instances: instanceCount,
-            nodes: violation.nodes || [],
+            nodes: incomplete.nodes || [],
             localReportHref: pageReport.localReportHref,
           });
-          violationsByRule[ruleId].totalInstances += instanceCount;
-        }
-      });
-      
-      // Process incomplete checks
-      pageReport.incomplete.forEach(incomplete => {
-        const ruleId = incomplete.id != null ? incomplete.id : '__unknown_rule__';
-        if (!incompleteByRule[ruleId]) {
-          incompleteByRule[ruleId] = {
-            id: ruleId,
-            description: incomplete.description,
-            help: incomplete.help,
-            helpUrl: incomplete.helpUrl,
-            impact: incomplete.impact,
-            tags: incomplete.tags || [],
-            pages: [],
-            totalInstances: 0,
-          };
-        }
-        
-        const instanceCount = incomplete.nodes?.length || 0;
-        // Always add the page - use pageName as fallback if URL is missing
-        const pageUrl = pageReport.url || pageReport.pageName || 'Unknown page';
-        const pageName = pageReport.pageName || pageUrl || 'Unknown page';
-        incompleteByRule[ruleId].pages.push({
-          url: pageUrl,
-          pageName: pageName,
-          instances: instanceCount,
-          nodes: incomplete.nodes || [],
-          localReportHref: pageReport.localReportHref,
+          incompleteByRule[ruleId].totalInstances += instanceCount;
         });
-        incompleteByRule[ruleId].totalInstances += instanceCount;
-      });
+      } catch (aggErr) {
+        console.warn(`Could not aggregate report for page "${pageReport.pageName}": ${aggErr.message}`);
+      }
     });
+
+    const incompleteRowsAcrossPages = pageReports.reduce((n, p) => n + p.incomplete.length, 0);
+    console.info(
+      `Comprehensive summary: ${uniqueReportPaths.length} page JSON file(s); ${incompleteRowsAcrossPages} incomplete row(s); ${Object.keys(incompleteByRule).length} unique incomplete rule type(s).`
+    );
     
     // Calculate statistics
     const totalPages = pageReports.length;
