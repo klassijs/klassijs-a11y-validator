@@ -1124,4 +1124,6 @@ module.exports = {
   isValidUrl,
   authenticate,
   isPrivatePage,
+  normalizePathPrefix,
+  isWithinPathPrefix,
 };

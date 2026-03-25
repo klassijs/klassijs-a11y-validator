@@ -2,7 +2,14 @@ const path = require('path');
 const fs = require("fs");
 
 const { getA11yValidator, getAccessibilityError, getAccessibilityTotalError, resetErrorCounts } = require('./src/accessibilityLib');
-const { crawlWebsite, isValidUrl, authenticate, isPrivatePage } = require('./src/urlCrawler');
+const {
+  crawlWebsite,
+  isValidUrl,
+  authenticate,
+  isPrivatePage,
+  normalizePathPrefix,
+  isWithinPathPrefix,
+} = require('./src/urlCrawler');
 const { discoverPagesFromSitemap } = require('./src/sitemapDiscovery');
 const { getPagesFromFile } = require('./src/pagesFileParser');
 const { dateTime } = require('./utils/dateTime');
@@ -301,19 +308,32 @@ async function a11yValidatorFromUrl(url, options = {}) {
       if (Array.isArray(discoveredFromSitemap) && discoveredFromSitemap.length > 0) {
         const effectiveMaxPages = !maxPages || maxPages <= 0 ? Number.MAX_SAFE_INTEGER : maxPages;
 
-        const filteredUrls = discoveredFromSitemap
-          .filter((pageUrl) => {
-            if (!excludePaths || excludePaths.length === 0) return true;
-            return !excludePaths.some((pattern) => {
-              try {
-                const urlObj = new URL(pageUrl);
-                return urlObj.pathname.includes(pattern);
-              } catch (_e) {
-                return String(pageUrl).includes(pattern);
-              }
-            });
-          })
-          .slice(0, effectiveMaxPages);
+        let filteredUrls = discoveredFromSitemap.filter((pageUrl) => {
+          if (!excludePaths || excludePaths.length === 0) return true;
+          return !excludePaths.some((pattern) => {
+            try {
+              const urlObj = new URL(pageUrl);
+              return urlObj.pathname.includes(pattern);
+            } catch (_e) {
+              return String(pageUrl).includes(pattern);
+            }
+          });
+        });
+
+        // Match crawlWebsite: when the start URL is under a subpath (e.g. /grovemusic), only include
+        // sitemap URLs under that path. Otherwise sitemap-first pulls the whole site.
+        const pathPrefix = (() => {
+          try {
+            return normalizePathPrefix(new URL(url).pathname);
+          } catch (_e) {
+            return '/';
+          }
+        })();
+        if (pathPrefix !== '/') {
+          filteredUrls = filteredUrls.filter((pageUrl) => isWithinPathPrefix(pageUrl, pathPrefix));
+        }
+
+        filteredUrls = filteredUrls.slice(0, effectiveMaxPages);
 
         if (filteredUrls.length > 0) {
           const domain = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
