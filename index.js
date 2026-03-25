@@ -893,6 +893,8 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
       return;
     }
     
+    const summaryDirAbs = path.resolve(summaryDir);
+
     for (const file of reportFiles) {
       try {
         const filePath = path.join(accessibilityReportsDir, file);
@@ -901,10 +903,17 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
         // Extract page name from filename
         const pageName = file.replace(`-${browserName}_`, '_').replace('.json', '');
         const pageUrl = reportData.url || '';
+
+        const pageHtmlFile = file.replace(/\.json$/i, '.html');
+        const pageHtmlAbs = path.resolve(accessibilityReportsDir, pageHtmlFile);
+        const localReportHref = fs.existsSync(pageHtmlAbs)
+          ? path.relative(summaryDirAbs, pageHtmlAbs).split(path.sep).join('/')
+          : null;
         
         pageReports.push({
           pageName,
           url: pageUrl,
+          localReportHref,
           violations: reportData.violations || [],
           incomplete: reportData.incomplete || [],
           passes: reportData.passes || [],
@@ -945,6 +954,7 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
             pageName: pageReport.pageName || pageUrl,
             instances: instanceCount,
             nodes: violation.nodes || [],
+            localReportHref: pageReport.localReportHref,
           });
           violationsByRule[ruleId].totalInstances += instanceCount;
         }
@@ -975,6 +985,7 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
           pageName: pageName,
           instances: instanceCount,
           nodes: incomplete.nodes || [],
+          localReportHref: pageReport.localReportHref,
         });
         incompleteByRule[ruleId].totalInstances += instanceCount;
       });
@@ -1030,7 +1041,7 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
       incompleteByRule: sortedIncomplete,
       siteWideViolationsList: siteWideViolations,
       siteWideIncompleteList: siteWideIncomplete,
-      allPages: pageReports.map(p => ({ url: p.url, pageName: p.pageName })),
+      allPages: pageReports.map(p => ({ url: p.url, pageName: p.pageName, localReportHref: p.localReportHref })),
     };
     
     const jsonFile = `${summaryDir}/${baseFileName}.json`;
@@ -1046,6 +1057,20 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
   } catch (error) {
     console.warn('Could not generate comprehensive summary report:', error.message);
   }
+}
+
+/**
+ * Renders the instance count as a link to the per-page HTML report when available.
+ */
+function instancesCountMarkup(page) {
+  const n = page.instances || 0;
+  const label = `${n} instance${n !== 1 ? 's' : ''}`;
+  const href = page.localReportHref;
+  if (href) {
+    const safeHref = href.split('/').map(encodeURIComponent).join('/');
+    return `<a href="${safeHref}" class="instances-count instances-count-link" title="Open full page report">${label}</a>`;
+  }
+  return `<span class="instances-count">${label}</span>`;
 }
 
 /**
@@ -1098,6 +1123,8 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
         .page-url { color: #3498db; text-decoration: none; font-weight: 500; }
         .page-url:hover { text-decoration: underline; }
         .instances-count { display: inline-block; background: #e74c3c; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.85em; margin-left: 10px; }
+        a.instances-count-link { cursor: pointer; text-decoration: none; color: white; }
+        a.instances-count-link:hover { filter: brightness(1.08); text-decoration: underline; }
         .help-link { color: #3498db; text-decoration: none; font-size: 0.9em; }
         .help-link:hover { text-decoration: underline; }
         .tags { margin-top: 10px; }
@@ -1554,7 +1581,7 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                         return `
                         <div class="page-item">
                             <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
-                            <span class="instances-count">${page.instances || 0} instance${(page.instances || 0) !== 1 ? 's' : ''}</span>
+                            ${instancesCountMarkup(page)}
                         </div>`;
                     }).join('') : '<p style="color: #999; font-style: italic;">No pages available</p>'}
                 </div>
@@ -1608,7 +1635,7 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                         return `
                         <div class="page-item">
                             <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
-                            <span class="instances-count">${page.instances || 0} instance${(page.instances || 0) !== 1 ? 's' : ''}</span>
+                            ${instancesCountMarkup(page)}
                         </div>`;
                     }).join('') : '<p style="color: #999; font-style: italic;">No pages available</p>'}
                 </div>
@@ -1666,7 +1693,7 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                         return `
                         <div class="page-item">
                             <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
-                            <span class="instances-count">${page.instances || 0} instance${(page.instances || 0) !== 1 ? 's' : ''}</span>
+                            ${instancesCountMarkup(page)}
                         </div>`;
                     }).join('') : '<p style="color: #999; font-style: italic; padding: 10px;">No pages available</p>'}
                 </div>
