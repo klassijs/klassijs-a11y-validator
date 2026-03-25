@@ -15,12 +15,32 @@ if (fs.existsSync(accessibility_lib)) {
 } else console.error('No Accessibility Lib');
 
 /**
- * Axe returns arrays; guard against odd serialization (object keyed by index).
+ * Axe returns arrays; guard against odd serialization (object keyed by index, or JSON string).
  */
 function normalizeAxeRuleArray(value) {
   if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed && typeof parsed === 'object') return Object.values(parsed);
+      } catch (_e) {
+        return [];
+      }
+    }
+    return [];
+  }
   if (value && typeof value === 'object') return Object.values(value);
   return [];
+}
+
+/**
+ * Safe to embed inside <script>: raw "</script>" in JSON strings would close the tag and hide the rest of the page.
+ */
+function jsonForInlineScript(value) {
+  return JSON.stringify(value).replace(/</g, '\\u003c');
 }
 
 /**
@@ -1158,6 +1178,13 @@ function instancesCountMarkup(page, hashFragment) {
  */
 function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, siteWideViolations, siteWideIncomplete) {
   const { domain, totalPages, pagesWithViolations, pagesWithIncomplete, totalViolations, totalIncomplete, siteWideViolations: siteWideCountFromData, siteWideIncomplete: siteWideIncompleteCount, crawlDuration, totalDuration, generatedAt } = summaryData;
+
+  const incompleteRules =
+    Array.isArray(sortedIncomplete) && sortedIncomplete.length > 0
+      ? sortedIncomplete
+      : Array.isArray(summaryData.incompleteByRule)
+        ? summaryData.incompleteByRule
+        : [];
   
   let html = `<!DOCTYPE html>
 <html lang="en">
@@ -1316,307 +1343,7 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
   
   const siteWideCount = sortedViolations.filter(v => v.pages.length > totalPages * 0.5).length;
   const pageSpecificCount = sortedViolations.length - siteWideCount;
-  
-  // Add JavaScript for charts
-  html += `
-    <script>
-        // Top Violations Chart
-        const violationsCtx = document.getElementById('violationsChart').getContext('2d');
-        new Chart(violationsCtx, {
-            type: 'bar',
-            data: {
-                labels: ${JSON.stringify(topViolations.map(v => v.label.length > 30 ? v.label.substring(0, 30) + '...' : v.label))},
-                datasets: [{
-                    label: 'Affected Pages',
-                    data: ${JSON.stringify(topViolations.map(v => v.pages))},
-                    backgroundColor: 'rgba(231, 76, 60, 0.8)',
-                    borderColor: 'rgba(231, 76, 60, 1)',
-                    borderWidth: 1
-                }, {
-                    label: 'Total Instances',
-                    data: ${JSON.stringify(topViolations.map(v => v.instances))},
-                    backgroundColor: 'rgba(243, 156, 18, 0.8)',
-                    borderColor: 'rgba(243, 156, 18, 1)',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'top'
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                return context.dataset.label + ': ' + context.parsed.y;
-                            }
-                        }
-                    }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true
-                    }
-                }
-            }
-        });
-        
-        // Impact Level Distribution Chart
-        const impactCtx = document.getElementById('impactChart').getContext('2d');
-        const impactLabels = ${JSON.stringify(Object.keys(impactData))};
-        const impactColors = {
-            'critical': 'rgba(142, 68, 173, 0.8)',
-            'serious': 'rgba(231, 76, 60, 0.8)',
-            'moderate': 'rgba(243, 156, 18, 0.8)',
-            'minor': 'rgba(52, 152, 219, 0.8)',
-            'unknown': 'rgba(149, 165, 166, 0.8)'
-        };
-        new Chart(impactCtx, {
-            type: 'doughnut',
-            data: {
-                labels: impactLabels,
-                datasets: [{
-                    data: ${JSON.stringify(Object.values(impactData))},
-                    backgroundColor: impactLabels.map(label => impactColors[label] || impactColors['unknown']),
-                    borderWidth: 2,
-                    borderColor: '#fff'
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'bottom'
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                                const percentage = ((context.parsed / total) * 100).toFixed(1);
-                                return context.label + ': ' + context.parsed + ' (' + percentage + '%)';
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        
-        // Pages with Most Violations Chart
-        const pagesCtx = document.getElementById('pagesChart').getContext('2d');
-        new Chart(pagesCtx, {
-            type: 'bar',
-            data: {
-                labels: ${JSON.stringify(topPages.map(p => {
-                  const url = p.url.length > 40 ? p.url.substring(0, 40) + '...' : p.url;
-                  return url;
-                }))},
-                datasets: [{
-                    label: 'Violation Instances',
-                    data: ${JSON.stringify(topPages.map(p => p.count))},
-                    backgroundColor: 'rgba(52, 152, 219, 0.8)',
-                    borderColor: 'rgba(52, 152, 219, 1)',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                indexAxis: 'y',
-                plugins: {
-                    legend: {
-                        display: false
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                return 'Violations: ' + context.parsed.x;
-                            }
-                        }
-                    }
-                },
-                scales: {
-                    x: {
-                        beginAtZero: true
-                    }
-                }
-            }
-        });
-        
-        // Site-Wide vs Page-Specific Chart
-        const scopeCtx = document.getElementById('scopeChart').getContext('2d');
-        new Chart(scopeCtx, {
-            type: 'pie',
-            data: {
-                labels: ['Site-Wide Issues', 'Page-Specific Issues'],
-                datasets: [{
-                    data: [${siteWideCount}, ${pageSpecificCount}],
-                    backgroundColor: [
-                        'rgba(243, 156, 18, 0.8)',
-                        'rgba(52, 152, 219, 0.8)'
-                    ],
-                    borderWidth: 2,
-                    borderColor: '#fff'
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'bottom'
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                const total = ${siteWideCount + pageSpecificCount};
-                                const percentage = ((context.parsed / total) * 100).toFixed(1);
-                                return context.label + ': ' + context.parsed + ' (' + percentage + '%)';
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    </script>
-    <script>
-        // Define collapse/expand functions in head so they're available immediately
-        window.toggleSection = function(sectionId) {
-            console.log('toggleSection called with:', sectionId);
-            const section = document.getElementById(sectionId);
-            const icon = document.getElementById(sectionId + 'Icon');
-            if (section) {
-                const isCollapsed = section.classList.contains('collapsed');
-                if (isCollapsed) {
-                    // Remove collapsed class temporarily to measure actual height
-                    section.classList.remove('collapsed');
-                    section.style.maxHeight = 'none';
-                    const height = section.scrollHeight;
-                    section.style.maxHeight = height + 'px';
-                    if (icon) {
-                        icon.classList.remove('collapsed');
-                    }
-                    // After transition, set to none to allow all content to be visible
-                    setTimeout(function() {
-                        section.style.maxHeight = 'none';
-                    }, 400);
-                } else {
-                    // Get current height before collapsing
-                    const currentHeight = section.scrollHeight;
-                    section.style.maxHeight = currentHeight + 'px';
-                    // Force reflow
-                    section.offsetHeight;
-                    section.classList.add('collapsed');
-                    section.style.maxHeight = '0';
-                    if (icon) {
-                        icon.classList.add('collapsed');
-                    }
-                }
-            } else {
-                console.error('Section not found:', sectionId);
-            }
-        };
-        
-        window.toggleViolation = function(violationId) {
-            console.log('toggleViolation called with:', violationId);
-            const violation = document.getElementById(violationId);
-            const icon = document.getElementById(violationId + 'Icon');
-            if (violation) {
-                const isCollapsed = violation.classList.contains('collapsed');
-                if (isCollapsed) {
-                    // Remove collapsed class temporarily to measure actual height
-                    violation.classList.remove('collapsed');
-                    violation.style.maxHeight = 'none';
-                    const height = violation.scrollHeight;
-                    violation.style.maxHeight = height + 'px';
-                    if (icon) {
-                        icon.classList.remove('collapsed');
-                    }
-                    // After transition, set to auto or large value to allow content to grow
-                    setTimeout(function() {
-                        violation.style.maxHeight = 'none';
-                    }, 400);
-                } else {
-                    // Get current height before collapsing
-                    const currentHeight = violation.scrollHeight;
-                    violation.style.maxHeight = currentHeight + 'px';
-                    // Force reflow
-                    violation.offsetHeight;
-                    violation.classList.add('collapsed');
-                    violation.style.maxHeight = '0';
-                    if (icon) {
-                        icon.classList.add('collapsed');
-                    }
-                }
-            } else {
-                console.error('Violation not found:', violationId);
-            }
-        };
-        
-        window.toggleAll = function(sectionId, expand) {
-            console.log('toggleAll called with:', sectionId, expand);
-            const section = document.getElementById(sectionId);
-            if (!section) {
-                console.error('Section not found:', sectionId);
-                return;
-            }
-            
-            // If expanding, first make sure the section itself is expanded
-            if (expand && section.classList.contains('collapsed')) {
-                const sectionIcon = document.getElementById(sectionId + 'Icon');
-                section.classList.remove('collapsed');
-                section.style.maxHeight = section.scrollHeight + 'px';
-                if (sectionIcon) {
-                    sectionIcon.classList.remove('collapsed');
-                }
-                // Small delay to ensure section is expanded before querying violations
-                setTimeout(function() {
-                    toggleViolationsInSection(sectionId, expand);
-                }, 50);
-            } else {
-                toggleViolationsInSection(sectionId, expand);
-            }
-        };
-        
-        function toggleViolationsInSection(sectionId, expand) {
-            const section = document.getElementById(sectionId);
-            if (!section) return;
-            
-            const violations = section.querySelectorAll('.violation-content');
-            console.log('Found violations:', violations.length);
-            violations.forEach((v) => {
-                const id = v.id;
-                const icon = document.getElementById(id + 'Icon');
-                if (expand) {
-                    // Remove collapsed class and measure actual height
-                    v.classList.remove('collapsed');
-                    v.style.maxHeight = 'none';
-                    const height = v.scrollHeight;
-                    v.style.maxHeight = height + 'px';
-                    if (icon) icon.classList.remove('collapsed');
-                    // After transition, set to none to allow all content to be visible
-                    setTimeout(function() {
-                        v.style.maxHeight = 'none';
-                    }, 400);
-                } else {
-                    // Get current height before collapsing
-                    const currentHeight = v.scrollHeight;
-                    v.style.maxHeight = currentHeight + 'px';
-                    // Force reflow
-                    v.offsetHeight;
-                    v.classList.add('collapsed');
-                    v.style.maxHeight = '0';
-                    if (icon) icon.classList.add('collapsed');
-                }
-            });
-        }
-    </script>`;
-  
+
   // Site-wide issues section
   if (siteWideViolations.length > 0) {
     html += `
@@ -1731,7 +1458,7 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
   }
   
   // Incomplete checks section
-  if (sortedIncomplete.length > 0) {
+  if (incompleteRules.length > 0) {
     html += `
         <div class="section-controls">
             <button onclick="window.toggleAll('incompleteSection', true)">Expand All</button>
@@ -1739,12 +1466,12 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
         </div>
         <h2 class="collapsible-header" onclick="window.toggleSection('incompleteSection')" style="cursor: pointer;">
             <span><span class="collapse-icon collapsed" id="incompleteIcon">▼</span>🔍 Issues Needing Manual Review</span>
-            <span style="font-size: 0.7em; color: #7f8c8d;">(${sortedIncomplete.length} issues)</span>
+            <span style="font-size: 0.7em; color: #7f8c8d;">(${incompleteRules.length} issues)</span>
         </h2>
         <div id="incompleteSection" class="collapsible-content collapsed" style="padding: 20px 0;">
             <p style="margin-bottom: 20px;">These issues require manual verification to determine if they are actual problems.</p>`;
     
-    sortedIncomplete.forEach((rule, index) => {
+    incompleteRules.forEach((rule, index) => {
       const isSiteWide = rule.pages.length > totalPages * 0.5;
       html += `
         <div class="violation-group ${isSiteWide ? 'site-wide' : ''}">
@@ -1782,6 +1509,292 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
     });
     html += `</div>`;
   }
+
+  // Charts + UI handlers after all sections so a malformed chart payload cannot prevent
+  // violation/incomplete HTML from being parsed (e.g. "</script>" in embedded JSON).
+  html += `
+    <script>
+        // Top Violations Chart
+        const violationsCtx = document.getElementById('violationsChart').getContext('2d');
+        new Chart(violationsCtx, {
+            type: 'bar',
+            data: {
+                labels: ${jsonForInlineScript(topViolations.map(v => v.label.length > 30 ? v.label.substring(0, 30) + '...' : v.label))},
+                datasets: [{
+                    label: 'Affected Pages',
+                    data: ${jsonForInlineScript(topViolations.map(v => v.pages))},
+                    backgroundColor: 'rgba(231, 76, 60, 0.8)',
+                    borderColor: 'rgba(231, 76, 60, 1)',
+                    borderWidth: 1
+                }, {
+                    label: 'Total Instances',
+                    data: ${jsonForInlineScript(topViolations.map(v => v.instances))},
+                    backgroundColor: 'rgba(243, 156, 18, 0.8)',
+                    borderColor: 'rgba(243, 156, 18, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return context.dataset.label + ': ' + context.parsed.y;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+        
+        // Impact Level Distribution Chart
+        const impactCtx = document.getElementById('impactChart').getContext('2d');
+        const impactLabels = ${jsonForInlineScript(Object.keys(impactData))};
+        const impactColors = {
+            'critical': 'rgba(142, 68, 173, 0.8)',
+            'serious': 'rgba(231, 76, 60, 0.8)',
+            'moderate': 'rgba(243, 156, 18, 0.8)',
+            'minor': 'rgba(52, 152, 219, 0.8)',
+            'unknown': 'rgba(149, 165, 166, 0.8)'
+        };
+        new Chart(impactCtx, {
+            type: 'doughnut',
+            data: {
+                labels: impactLabels,
+                datasets: [{
+                    data: ${jsonForInlineScript(Object.values(impactData))},
+                    backgroundColor: impactLabels.map(label => impactColors[label] || impactColors['unknown']),
+                    borderWidth: 2,
+                    borderColor: '#fff'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                const percentage = ((context.parsed / total) * 100).toFixed(1);
+                                return context.label + ': ' + context.parsed + ' (' + percentage + '%)';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        
+        // Pages with Most Violations Chart
+        const pagesCtx = document.getElementById('pagesChart').getContext('2d');
+        new Chart(pagesCtx, {
+            type: 'bar',
+            data: {
+                labels: ${jsonForInlineScript(topPages.map(p => {
+                  const url = p.url.length > 40 ? p.url.substring(0, 40) + '...' : p.url;
+                  return url;
+                }))},
+                datasets: [{
+                    label: 'Violation Instances',
+                    data: ${jsonForInlineScript(topPages.map(p => p.count))},
+                    backgroundColor: 'rgba(52, 152, 219, 0.8)',
+                    borderColor: 'rgba(52, 152, 219, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                indexAxis: 'y',
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return 'Violations: ' + context.parsed.x;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+        
+        // Site-Wide vs Page-Specific Chart
+        const scopeCtx = document.getElementById('scopeChart').getContext('2d');
+        new Chart(scopeCtx, {
+            type: 'pie',
+            data: {
+                labels: ['Site-Wide Issues', 'Page-Specific Issues'],
+                datasets: [{
+                    data: [${siteWideCount}, ${pageSpecificCount}],
+                    backgroundColor: [
+                        'rgba(243, 156, 18, 0.8)',
+                        'rgba(52, 152, 219, 0.8)'
+                    ],
+                    borderWidth: 2,
+                    borderColor: '#fff'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const total = ${Math.max(1, siteWideCount + pageSpecificCount)};
+                                const percentage = ((context.parsed / total) * 100).toFixed(1);
+                                return context.label + ': ' + context.parsed + ' (' + percentage + '%)';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    </script>
+    <script>
+        window.toggleSection = function(sectionId) {
+            console.log('toggleSection called with:', sectionId);
+            const section = document.getElementById(sectionId);
+            const icon = document.getElementById(sectionId + 'Icon');
+            if (section) {
+                const isCollapsed = section.classList.contains('collapsed');
+                if (isCollapsed) {
+                    section.classList.remove('collapsed');
+                    section.style.maxHeight = 'none';
+                    const height = section.scrollHeight;
+                    section.style.maxHeight = height + 'px';
+                    if (icon) {
+                        icon.classList.remove('collapsed');
+                    }
+                    setTimeout(function() {
+                        section.style.maxHeight = 'none';
+                    }, 400);
+                } else {
+                    const currentHeight = section.scrollHeight;
+                    section.style.maxHeight = currentHeight + 'px';
+                    section.offsetHeight;
+                    section.classList.add('collapsed');
+                    section.style.maxHeight = '0';
+                    if (icon) {
+                        icon.classList.add('collapsed');
+                    }
+                }
+            } else {
+                console.error('Section not found:', sectionId);
+            }
+        };
+        
+        window.toggleViolation = function(violationId) {
+            console.log('toggleViolation called with:', violationId);
+            const violation = document.getElementById(violationId);
+            const icon = document.getElementById(violationId + 'Icon');
+            if (violation) {
+                const isCollapsed = violation.classList.contains('collapsed');
+                if (isCollapsed) {
+                    violation.classList.remove('collapsed');
+                    violation.style.maxHeight = 'none';
+                    const height = violation.scrollHeight;
+                    violation.style.maxHeight = height + 'px';
+                    if (icon) {
+                        icon.classList.remove('collapsed');
+                    }
+                    setTimeout(function() {
+                        violation.style.maxHeight = 'none';
+                    }, 400);
+                } else {
+                    const currentHeight = violation.scrollHeight;
+                    violation.style.maxHeight = currentHeight + 'px';
+                    violation.offsetHeight;
+                    violation.classList.add('collapsed');
+                    violation.style.maxHeight = '0';
+                    if (icon) {
+                        icon.classList.add('collapsed');
+                    }
+                }
+            } else {
+                console.error('Violation not found:', violationId);
+            }
+        };
+        
+        window.toggleAll = function(sectionId, expand) {
+            console.log('toggleAll called with:', sectionId, expand);
+            const section = document.getElementById(sectionId);
+            if (!section) {
+                console.error('Section not found:', sectionId);
+                return;
+            }
+            
+            if (expand && section.classList.contains('collapsed')) {
+                const sectionIcon = document.getElementById(sectionId + 'Icon');
+                section.classList.remove('collapsed');
+                section.style.maxHeight = section.scrollHeight + 'px';
+                if (sectionIcon) {
+                    sectionIcon.classList.remove('collapsed');
+                }
+                setTimeout(function() {
+                    toggleViolationsInSection(sectionId, expand);
+                }, 50);
+            } else {
+                toggleViolationsInSection(sectionId, expand);
+            }
+        };
+        
+        function toggleViolationsInSection(sectionId, expand) {
+            const section = document.getElementById(sectionId);
+            if (!section) return;
+            
+            const violations = section.querySelectorAll('.violation-content');
+            console.log('Found violations:', violations.length);
+            violations.forEach((v) => {
+                const id = v.id;
+                const icon = document.getElementById(id + 'Icon');
+                if (expand) {
+                    v.classList.remove('collapsed');
+                    v.style.maxHeight = 'none';
+                    const height = v.scrollHeight;
+                    v.style.maxHeight = height + 'px';
+                    if (icon) icon.classList.remove('collapsed');
+                    setTimeout(function() {
+                        v.style.maxHeight = 'none';
+                    }, 400);
+                } else {
+                    const currentHeight = v.scrollHeight;
+                    v.style.maxHeight = currentHeight + 'px';
+                    v.offsetHeight;
+                    v.classList.add('collapsed');
+                    v.style.maxHeight = '0';
+                    if (icon) icon.classList.add('collapsed');
+                }
+            });
+        }
+    </script>`;
   
   html += `
     </div>
