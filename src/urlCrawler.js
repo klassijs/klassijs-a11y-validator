@@ -41,12 +41,117 @@ function normalizeUrl(url) {
 }
 
 /**
+ * Max time (ms) to poll until same-domain links exist (headless often paints nav late).
+ * Set A11Y_LINK_POLL_MS=0 to disable. Set to a number to override all depths.
+ */
+function getLinkPollBudgetMs(crawlDepth) {
+  const raw = process.env.A11Y_LINK_POLL_MS;
+  if (raw === '0') return 0;
+  if (raw !== undefined && raw !== '') {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  if (crawlDepth === 0) return 30000;
+  if (crawlDepth <= 3) return 12000;
+  return 0;
+}
+
+/**
+ * @param {string[]} links - Raw href strings from the page
+ */
+function filterAnchorsToInternalLinks(links, pageUrl, baseDomain) {
+  const internalLinks = links
+    .map((link) => {
+      try {
+        const url = new URL(link);
+
+        if (url.hash && url.pathname === new URL(pageUrl).pathname && !url.search) {
+          return null;
+        }
+
+        if (!['http:', 'https:'].includes(url.protocol)) {
+          return null;
+        }
+
+        if (!isSameDomain(url.href, baseDomain)) {
+          return null;
+        }
+
+        if (isNonHtmlResource(url.href)) {
+          return null;
+        }
+
+        return url.href;
+      } catch (e) {
+        try {
+          let fullUrl;
+          if (link.startsWith('/')) {
+            fullUrl = new URL(link, pageUrl).href;
+          } else {
+            fullUrl = new URL(link).href;
+          }
+
+          if (!isSameDomain(fullUrl, baseDomain)) {
+            return null;
+          }
+
+          if (isNonHtmlResource(fullUrl)) {
+            return null;
+          }
+
+          return fullUrl;
+        } catch (e2) {
+          return null;
+        }
+      }
+    })
+    .filter((url) => {
+      if (!url) return false;
+
+      if (!isSameDomain(url, baseDomain)) {
+        return false;
+      }
+
+      if (isNonHtmlResource(url)) {
+        return false;
+      }
+
+      const urlLower = url.toLowerCase();
+      return (
+        !urlLower.includes('mailto:') &&
+        !urlLower.includes('tel:') &&
+        !urlLower.includes('javascript:')
+      );
+    })
+    .map((url) => normalizeUrl(url))
+    .filter((url) => {
+      if (!url) return false;
+      try {
+        return isSameDomain(url, baseDomain);
+      } catch (e) {
+        return false;
+      }
+    });
+
+  const uniqueLinks = [...new Set(internalLinks)];
+
+  return uniqueLinks.filter((link) => {
+    try {
+      return isSameDomain(link, baseDomain);
+    } catch (e) {
+      return false;
+    }
+  });
+}
+
+/**
  * Extracts all internal links from the current page
  * @param {string} currentPageUrl - The current page URL (used to resolve relative links)
  * @param {string} baseDomain - The base domain to match against
+ * @param {number} [crawlDepth=0] - Crawl depth (polling for late-rendered links only at depth 0)
  * @returns {Promise<Array<string>>} - Array of discovered URLs from the same domain
  */
-async function discoverPageLinks(currentPageUrl, baseDomain) {
+async function discoverPageLinks(currentPageUrl, baseDomain, crawlDepth = 0) {
   if (!global.browser) {
     throw new Error('Browser instance not available. Make sure browser is initialized.');
   }
@@ -69,31 +174,53 @@ async function discoverPageLinks(currentPageUrl, baseDomain) {
     
     const pageUrl = currentPageUrl || actualCurrentUrl;
 
-    // Extract all links from the page with timeout protection
-    let links = [];
-    try {
-      // Add timeout to the execute call
+    const runExtract = async () => {
       const executePromise = global.browser.execute(() => {
-        const anchors = Array.from(document.querySelectorAll('a[href]'));
-        return anchors.map(anchor => {
-          const href = anchor.getAttribute('href');
-          if (!href || !href.trim()) return null;
-          
-          // Get the full URL (browser resolves relative URLs automatically)
-          try {
-            return anchor.href; // This is already the full resolved URL
-          } catch (e) {
-            return null;
-          }
-        }).filter(href => href && href.trim() !== '');
+        try {
+          const h = Math.max(
+            document.body ? document.body.scrollHeight : 0,
+            document.documentElement ? document.documentElement.scrollHeight : 0,
+            window.innerHeight || 0
+          );
+          window.scrollTo(0, 0);
+          window.scrollTo(0, h);
+          window.scrollTo(0, 0);
+        } catch (e) {
+          /* ignore scroll errors */
+        }
+
+        function collectHrefFromRoot(root) {
+          const out = [];
+          if (!root || !root.querySelectorAll) return out;
+          root.querySelectorAll('a[href]').forEach((a) => {
+            try {
+              const href = a.getAttribute('href');
+              if (!href || !String(href).trim()) return;
+              out.push(a.href);
+            } catch (e) {
+              /* ignore */
+            }
+          });
+          root.querySelectorAll('*').forEach((el) => {
+            if (el.shadowRoot) {
+              collectHrefFromRoot(el.shadowRoot).forEach((x) => out.push(x));
+            }
+          });
+          return out;
+        }
+
+        const flat = collectHrefFromRoot(document);
+        return [...new Set(flat)];
       });
-      
-      // Race against a timeout
-      const timeoutPromise = new Promise((_, reject) => 
+      const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Link extraction timeout after 10 seconds')), 10000)
       );
-      
-      links = await Promise.race([executePromise, timeoutPromise]);
+      return Promise.race([executePromise, timeoutPromise]);
+    };
+
+    let links = [];
+    try {
+      links = await runExtract();
     } catch (executeError) {
       if (executeError.message && (
         executeError.message.includes('no such frame') ||
@@ -103,111 +230,44 @@ async function discoverPageLinks(currentPageUrl, baseDomain) {
       )) {
         throw new Error('Browser context lost during link extraction');
       }
-      // For timeout or other errors, return empty array
       console.warn(`    ⚠️  Could not extract links: ${executeError.message}`);
       return [];
     }
 
+    if (!links) links = [];
+
+    let validatedLinks = filterAnchorsToInternalLinks(links, pageUrl, baseDomain);
+
+    const pollBudgetMs = getLinkPollBudgetMs(crawlDepth);
+    if (
+      pollBudgetMs > 0 &&
+      validatedLinks.length === 0 &&
+      typeof global.browser.pause === 'function'
+    ) {
+      console.info(
+        `    No same-domain links yet (raw anchors: ${links.length}); polling up to ${pollBudgetMs}ms for headless/SPA. Set A11Y_LINK_POLL_MS=0 to skip.`
+      );
+      const stepMs = 600;
+      const deadline = Date.now() + pollBudgetMs;
+      while (validatedLinks.length === 0 && Date.now() < deadline) {
+        await global.browser.pause(stepMs);
+        try {
+          links = await runExtract();
+          if (!links) links = [];
+          validatedLinks = filterAnchorsToInternalLinks(links, pageUrl, baseDomain);
+        } catch (pollErr) {
+          console.warn(`    ⚠️  Link poll extract failed: ${pollErr.message}`);
+          break;
+        }
+      }
+    }
+
     console.info(`    Found ${links.length} total links on page`);
 
-      // Filter to only include internal links (same domain) and exclude non-HTML resources
-      const internalLinks = links
-        .map(link => {
-          try {
-            // Link is already resolved by browser, but normalize it
-            const url = new URL(link);
-            
-            // Skip anchor-only links (same page, just fragment)
-            if (url.hash && url.pathname === new URL(pageUrl).pathname && !url.search) {
-              return null;
-            }
-            
-            // Skip non-HTTP(S) protocols
-            if (!['http:', 'https:'].includes(url.protocol)) {
-              return null;
-            }
-            
-            // CRITICAL: Check domain BEFORE normalizing
-            if (!isSameDomain(url.href, baseDomain)) {
-              return null; // Reject external domains immediately
-            }
-            
-            // Exclude non-HTML resources (images, files, etc.)
-            if (isNonHtmlResource(url.href)) {
-              return null;
-            }
-            
-            return url.href;
-          } catch (e) {
-            // If URL parsing fails, try to construct from the link
-            try {
-              let fullUrl;
-              if (link.startsWith('/')) {
-                fullUrl = new URL(link, pageUrl).href;
-              } else {
-                fullUrl = new URL(link).href;
-              }
-              
-              // Check domain before returning
-              if (!isSameDomain(fullUrl, baseDomain)) {
-                return null;
-              }
-              
-              // Exclude non-HTML resources
-              if (isNonHtmlResource(fullUrl)) {
-                return null;
-              }
-              
-              return fullUrl;
-            } catch (e2) {
-              return null;
-            }
-          }
-        })
-        .filter(url => {
-          if (!url) return false;
-          
-          // Double-check domain (should already be filtered, but be extra safe)
-          if (!isSameDomain(url, baseDomain)) {
-            return false;
-          }
-          
-          // Additional filters - exclude non-HTML resources and protocols
-          if (isNonHtmlResource(url)) {
-            return false;
-          }
-          
-          const urlLower = url.toLowerCase();
-          return !urlLower.includes('mailto:') && 
-                 !urlLower.includes('tel:') &&
-                 !urlLower.includes('javascript:');
-        })
-        .map(url => normalizeUrl(url))
-        .filter(url => {
-          // Final validation: ensure URL is valid and from same domain
-          if (!url) return false;
-          try {
-            // Verify normalized URL is still from same domain
-            return isSameDomain(url, baseDomain);
-          } catch (e) {
-            return false;
-          }
-        });
+    console.info(
+      `    ${validatedLinks.length} unique internal links after filtering (${Math.max(0, links.length - validatedLinks.length)} external/duplicate links filtered out)`
+    );
 
-    // Remove duplicates using Set
-    const uniqueLinks = [...new Set(internalLinks)];
-    
-    // Final validation: ensure no external domains slipped through
-    const validatedLinks = uniqueLinks.filter(link => {
-      try {
-        return isSameDomain(link, baseDomain);
-      } catch (e) {
-        return false;
-      }
-    });
-    
-    console.info(`    ${validatedLinks.length} unique internal links after filtering (${links.length - validatedLinks.length} external/duplicate links filtered out)`);
-    
     return validatedLinks;
   } catch (error) {
     console.error('Error discovering page links:', error);
@@ -457,6 +517,7 @@ function isSameDomain(url, baseDomain) {
 /**
  * Crawls a website starting from a base URL and discovers all pages
  * Builds a sitemap/page map of all discovered pages within the same domain
+ * Note: Link discovery is unreliable in headless Chrome for many JS-heavy sites; prefer a visible browser or sitemap/explicit URLs.
  * @param {string} baseUrl - The starting URL to crawl
  * @param {Object} options - Crawler options
  * @param {number} options.maxPages - Maximum number of pages to crawl (default: 50)
@@ -642,6 +703,17 @@ async function crawlWebsite(baseUrl, options = {}) {
         continue;
       }
 
+      // Brief pause after load so headless can match headed timing (disable: A11Y_POST_LOAD_DELAY_MS=0).
+      const rawPost = process.env.A11Y_POST_LOAD_DELAY_MS;
+      let postLoadDelayMs = 1200;
+      if (rawPost !== undefined && rawPost !== '') {
+        const n = Number.parseInt(rawPost, 10);
+        postLoadDelayMs = Number.isFinite(n) ? Math.max(0, n) : 1200;
+      }
+      if (postLoadDelayMs > 0 && typeof global.browser.pause === 'function') {
+        await global.browser.pause(postLoadDelayMs);
+      }
+
       // Check if this is a private page that should be skipped
       if (skipPrivatePages) {
         const isPrivate = await isPrivatePage(privatePageIndicators);
@@ -721,7 +793,7 @@ async function crawlWebsite(baseUrl, options = {}) {
         // Add timeout wrapper for link discovery to prevent hanging
         let links = [];
         try {
-          const discoveryPromise = discoverPageLinks(normalizedUrl, baseDomain);
+          const discoveryPromise = discoverPageLinks(normalizedUrl, baseDomain, depth);
           const timeoutPromise = new Promise((_, reject) => 
             setTimeout(() => reject(new Error('Link discovery timeout after 15 seconds')), 15000)
           );

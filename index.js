@@ -43,6 +43,16 @@ function jsonForInlineScript(value) {
   return JSON.stringify(value).replace(/</g, '\\u003c');
 }
 
+/** Escape text/attribute fragments embedded in summary HTML (axe messages may contain `<`, `&`, etc.). */
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 /**
  * Prefer JSON files that pair 1:1 with HTML paths recorded during this run (avoids merging stale reports
  * left in the accessibility folder from older runs).
@@ -63,11 +73,24 @@ function collectJsonPathsFromAccessibilityReportList() {
  * Axe uses `incomplete`; tolerate alternate shapes if a wrapper ever changes the payload.
  */
 function extractIncompleteFromReport(reportData) {
+  if (!reportData || typeof reportData !== 'object') return [];
   const raw =
     reportData.incomplete ??
     reportData.incompleteResults ??
-    reportData.incompleteChecks;
-  return normalizeAxeRuleArray(raw);
+    reportData.incompleteChecks ??
+    (reportData.results && reportData.results.incomplete) ??
+    (reportData.axeResults && reportData.axeResults.incomplete);
+  let list = normalizeAxeRuleArray(raw);
+  if (list.length > 0) return list;
+  if (Array.isArray(reportData.frames)) {
+    const merged = [];
+    for (const fr of reportData.frames) {
+      if (!fr || typeof fr !== 'object') continue;
+      merged.push(...normalizeAxeRuleArray(fr.incomplete));
+    }
+    return merged;
+  }
+  return [];
 }
 
 /**
@@ -1080,7 +1103,12 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
         // Process incomplete checks (axe "manual review" bucket only)
         pageReport.incomplete.forEach((incomplete) => {
           if (!incomplete || typeof incomplete !== 'object') return;
-          const ruleId = incomplete.id != null ? incomplete.id : '__unknown_rule__';
+          const ruleId =
+            incomplete.id != null
+              ? incomplete.id
+              : incomplete.ruleId != null
+                ? incomplete.ruleId
+                : '__unknown_rule__';
           if (!incompleteByRule[ruleId]) {
             incompleteByRule[ruleId] = {
               id: ruleId,
@@ -1216,6 +1244,7 @@ function instancesCountMarkup(page, hashFragment) {
  */
 function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, siteWideViolations, siteWideIncomplete) {
   const { domain, totalPages, pagesWithViolations, pagesWithIncomplete, totalViolations, totalIncomplete, siteWideViolations: siteWideCountFromData, siteWideIncomplete: siteWideIncompleteCount, crawlDuration, totalDuration, generatedAt } = summaryData;
+  const esc = escapeHtml;
 
   const incompleteRules =
     Array.isArray(sortedIncomplete) && sortedIncomplete.length > 0
@@ -1399,13 +1428,16 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
     siteWideViolations.forEach((rule, index) => {
       const impactClass = rule.impact ? `impact-${rule.impact}` : 'impact-moderate';
       const percentage = Math.round((rule.pages.length / totalPages) * 100);
+      const title = esc(rule.help || rule.id);
+      const desc = esc(rule.description || '');
+      const helpUrl = rule.helpUrl ? esc(rule.helpUrl) : '';
       html += `
         <div class="violation-group site-wide">
             <div class="violation-header violation-toggle" onclick="window.toggleViolation('siteWideViolation${index}')" style="cursor: pointer;">
                 <div>
                     <span class="collapse-icon" id="siteWideViolation${index}Icon">▼</span>
-                    <span class="violation-title">${rule.help || rule.id}</span>
-                    <span class="impact-badge ${impactClass}">${rule.impact || 'unknown'}</span>
+                    <span class="violation-title">${title}</span>
+                    <span class="impact-badge ${impactClass}">${esc(rule.impact || 'unknown')}</span>
                     <span class="site-wide-badge">${percentage}% of pages</span>
                 </div>
                 <div class="violation-meta">
@@ -1413,10 +1445,10 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                 </div>
             </div>
             <div id="siteWideViolation${index}" class="violation-content collapsed">
-                <p style="margin: 10px 0; color: #555;">${rule.description}</p>
-                ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
+                <p style="margin: 10px 0; color: #555;">${desc}</p>
+                ${helpUrl ? `<a href="${helpUrl}" target="_blank" rel="noopener noreferrer" class="help-link">Learn more →</a>` : ''}
                 <div class="tags">
-                    ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
+                    ${rule.tags.map((tag) => `<span class="tag">${esc(tag)}</span>`).join('')}
                 </div>
                 <div class="pages-list">
                     <strong>Affected Pages (${rule.pages.length}):</strong>
@@ -1425,8 +1457,8 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                         const displayUrl = pageUrl || 'Unknown page';
                         return `
                         <div class="page-item">
-                            <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
-                            ${instancesCountMarkup(page)}
+                            <a href="${esc(pageUrl)}" target="_blank" rel="noopener noreferrer" class="page-url">${esc(displayUrl)}</a>
+                            ${instancesCountMarkup(page, '#menu1')}
                         </div>`;
                     }).join('') : '<p style="color: #999; font-style: italic;">No pages available</p>'}
                 </div>
@@ -1453,13 +1485,16 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
     sortedViolations.forEach((rule, index) => {
       const isSiteWide = rule.pages.length > totalPages * 0.5;
       const impactClass = rule.impact ? `impact-${rule.impact}` : 'impact-moderate';
+      const title = esc(rule.help || rule.id);
+      const desc = esc(rule.description || '');
+      const helpUrl = rule.helpUrl ? esc(rule.helpUrl) : '';
       html += `
         <div class="violation-group ${isSiteWide ? 'site-wide' : ''}">
             <div class="violation-header violation-toggle" onclick="window.toggleViolation('allViolation${index}')" style="cursor: pointer;">
                 <div>
                     <span class="collapse-icon collapsed" id="allViolation${index}Icon">▼</span>
-                    <span class="violation-title">${rule.help || rule.id}</span>
-                    <span class="impact-badge ${impactClass}">${rule.impact || 'unknown'}</span>
+                    <span class="violation-title">${title}</span>
+                    <span class="impact-badge ${impactClass}">${esc(rule.impact || 'unknown')}</span>
                     ${isSiteWide ? '<span class="site-wide-badge">Site-Wide</span>' : ''}
                 </div>
                 <div class="violation-meta">
@@ -1467,10 +1502,10 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                 </div>
             </div>
             <div id="allViolation${index}" class="violation-content collapsed">
-                <p style="margin: 10px 0; color: #555;">${rule.description}</p>
-                ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
+                <p style="margin: 10px 0; color: #555;">${desc}</p>
+                ${helpUrl ? `<a href="${helpUrl}" target="_blank" rel="noopener noreferrer" class="help-link">Learn more →</a>` : ''}
                 <div class="tags">
-                    ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
+                    ${rule.tags.map((tag) => `<span class="tag">${esc(tag)}</span>`).join('')}
                 </div>
                 <div class="pages-list">
                     <strong>Pages with this issue (${rule.pages.length}):</strong>
@@ -1479,8 +1514,8 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                         const displayUrl = pageUrl || 'Unknown page';
                         return `
                         <div class="page-item">
-                            <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
-                            ${instancesCountMarkup(page)}
+                            <a href="${esc(pageUrl)}" target="_blank" rel="noopener noreferrer" class="page-url">${esc(displayUrl)}</a>
+                            ${instancesCountMarkup(page, '#menu1')}
                         </div>`;
                     }).join('') : '<p style="color: #999; font-style: italic;">No pages available</p>'}
                 </div>
@@ -1488,6 +1523,12 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
         </div>`;
     });
     html += `</div>`;
+  } else if (incompleteRules.length > 0) {
+    html += `
+        <div class="summary-section" style="background: #fff8e6; border-left: 4px solid #f39c12;">
+            <p><strong>No automated violations</strong> (failed axe checks) were reported on these pages.</p>
+            <p style="margin-top: 8px;">There are still <strong>incomplete</strong> findings below that need manual review.</p>
+        </div>`;
   } else {
     html += `
         <div class="no-issues">
@@ -1495,7 +1536,7 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
         </div>`;
   }
   
-  // Incomplete checks section
+  // Incomplete checks section (axe “needs review” bucket) — expanded by default so manual review is visible
   if (incompleteRules.length > 0) {
     html += `
         <div class="section-controls">
@@ -1507,16 +1548,19 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
             <span style="font-size: 0.7em; color: #7f8c8d;">(${incompleteRules.length} issues)</span>
         </h2>
         <div id="incompleteSection" class="collapsible-content collapsed" style="padding: 20px 0;">
-            <p style="margin-bottom: 20px;">These issues require manual verification to determine if they are actual problems.</p>`;
+            <p style="margin-bottom: 20px;">These incomplete checks require manual verification to determine if they are real issues.</p>`;
     
     incompleteRules.forEach((rule, index) => {
       const isSiteWide = rule.pages.length > totalPages * 0.5;
+      const title = esc(rule.help || rule.id);
+      const desc = esc(rule.description || '');
+      const helpUrl = rule.helpUrl ? esc(rule.helpUrl) : '';
       html += `
         <div class="violation-group ${isSiteWide ? 'site-wide' : ''}">
             <div class="violation-header violation-toggle" onclick="window.toggleViolation('incompleteViolation${index}')" style="cursor: pointer;">
                 <div>
                     <span class="collapse-icon collapsed" id="incompleteViolation${index}Icon">▼</span>
-                    <span class="violation-title">${rule.help || rule.id}</span>
+                    <span class="violation-title">${title}</span>
                     ${isSiteWide ? '<span class="site-wide-badge">Site-Wide</span>' : ''}
                 </div>
                 <div class="violation-meta">
@@ -1524,11 +1568,11 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                 </div>
             </div>
             <div id="incompleteViolation${index}" class="violation-content collapsed">
-                <p style="margin: 10px 0; color: #555;">${rule.description}</p>
-                ${rule.helpUrl ? `<a href="${rule.helpUrl}" target="_blank" class="help-link">Learn more →</a>` : ''}
+                <p style="margin: 10px 0; color: #555;">${desc}</p>
+                ${helpUrl ? `<a href="${helpUrl}" target="_blank" rel="noopener noreferrer" class="help-link">Learn more →</a>` : ''}
                 ${rule.tags && rule.tags.length > 0 ? `
                 <div class="tags">
-                    ${rule.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
+                    ${rule.tags.map((tag) => `<span class="tag">${esc(tag)}</span>`).join('')}
                 </div>` : ''}
                 <div class="pages-list">
                     <strong>Pages needing review (${rule.pages ? rule.pages.length : 0}):</strong>
@@ -1537,7 +1581,7 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                         const displayUrl = pageUrl || 'Unknown page';
                         return `
                         <div class="page-item">
-                            <a href="${pageUrl}" target="_blank" class="page-url">${displayUrl}</a>
+                            <a href="${esc(pageUrl)}" target="_blank" rel="noopener noreferrer" class="page-url">${esc(displayUrl)}</a>
                             ${instancesCountMarkup(page, '#menu2')}
                         </div>`;
                     }).join('') : '<p style="color: #999; font-style: italic; padding: 10px;">No pages available</p>'}
@@ -1552,6 +1596,8 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
   // violation/incomplete HTML from being parsed (e.g. "</script>" in embedded JSON).
   html += `
     <script>
+(function() {
+    try {
         // Top Violations Chart
         const violationsCtx = document.getElementById('violationsChart').getContext('2d');
         new Chart(violationsCtx, {
@@ -1715,6 +1761,10 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                 }
             }
         });
+    } catch (chartErr) {
+        console.warn('Summary charts could not be rendered:', chartErr);
+    }
+})();
     </script>
     <script>
         window.toggleSection = function(sectionId) {

@@ -37,6 +37,11 @@
  *   BROWSER=firefox node src/run-a11y-test.js https://example.com --crawl-only
  *
  *   # Prefer sitemap URL list before link crawl: --sitemap-first or SITEMAP_FIRST=true
+ *
+ *   # Override crawl size: A11Y_MAX_PAGES=25 node src/run-a11y-test.js https://example.com
+ *
+ *   # Browser: same locally and in CI — explicit --pages / file / sitemap → headless; crawl from URL → visible.
+ *   # Override: HEADLESS=true|false, VISIBLE_BROWSER=1. In CI, crawl may need: xvfb-run node src/run-a11y-test.js …
  */
 
 const { remote } = require('webdriverio');
@@ -141,39 +146,49 @@ try {
   process.exit(1);
 }
 
-// Configure browser options
-// Note: If you have @wdio/chromedriver-service installed, you can use the services config
-// Otherwise, WebdriverIO will try to download chromedriver automatically
-const browserOptions = {
-  capabilities: {
-    browserName: process.env.BROWSER || 'chrome', // 'chrome', 'firefox', 'safari'
-    'goog:chromeOptions': {
-      args: ['--headless', '--no-sandbox', '--disable-dev-shm-usage'], // Remove '--headless' to see the browser
+// Browser: explicit pages / URL list → headless; crawl-from-start-URL → visible (same in CI and locally).
+// Override: HEADLESS=true|false, VISIBLE_BROWSER=1. CI does not change defaults; use xvfb-run in CI if crawl needs a display.
+function resolveHeadlessChrome(mode) {
+  if (process.env.VISIBLE_BROWSER === '1') return false;
+  if (process.env.HEADLESS === 'false' || process.env.HEADLESS === '0') return false;
+  if (process.env.HEADLESS === 'true' || process.env.HEADLESS === '1') return true;
+  return mode === 'pages';
+}
+
+function buildBrowserOptions(headlessChrome) {
+  const chromeArgs = ['--no-sandbox', '--disable-dev-shm-usage'];
+  if (headlessChrome) {
+    chromeArgs.unshift('--window-size=1920,1080');
+    chromeArgs.unshift('--headless=new');
+  }
+  return {
+    capabilities: {
+      browserName: process.env.BROWSER || 'chrome',
+      'goog:chromeOptions': {
+        args: chromeArgs,
+      },
     },
-  },
-  // Try to use chromedriver service with custom cache directory if available
-  // This requires @wdio/chromedriver-service to be installed
-  // If not installed, WebdriverIO will fall back to auto-download (which should use TMPDIR)
-  services: (process.env.BROWSER === 'chrome' || !process.env.BROWSER) ? 
-    (() => {
-      try {
-        require.resolve('@wdio/chromedriver-service');
-        return [['chromedriver', { cacheDir: cacheDir }]];
-      } catch (e) {
-        // Service not installed, WebdriverIO will use TMPDIR for cache
-        return undefined;
-      }
-    })() : undefined,
-  logLevel: 'warn', // Reduce log noise
-  connectionRetryTimeout: 120000,
-  connectionRetryCount: 3,
-};
+    services:
+      process.env.BROWSER === 'chrome' || !process.env.BROWSER
+        ? (() => {
+            try {
+              require.resolve('@wdio/chromedriver-service');
+              return [['chromedriver', { cacheDir: cacheDir }]];
+            } catch (e) {
+              return undefined;
+            }
+          })()
+        : undefined,
+    logLevel: 'warn',
+    connectionRetryTimeout: 120000,
+    connectionRetryCount: 3,
+  };
+}
 
 // Configuration for paths and environment
 // These are required by the accessibility library
-const setupGlobals = () => {
-  // Set browser name (used in report paths)
-  global.browserName = browserOptions.capabilities.browserName || 'chrome';
+const setupGlobals = (browserName = 'chrome') => {
+  global.browserName = browserName;
   astellen.set('BROWSER_NAME', global.browserName);
 
   // Set environment name (used in report paths)
@@ -529,14 +544,25 @@ async function runAccessibilityTest() {
 
   let browser;
 
+  const headlessChrome = resolveHeadlessChrome(options.mode);
+  const browserOptions = buildBrowserOptions(headlessChrome);
+
   try {
-    // Setup global variables required by the validator
-    setupGlobals();
+    setupGlobals(browserOptions.capabilities.browserName || 'chrome');
 
     // Initialize the browser
     console.log('Initializing browser...');
     console.log(`Using browser: ${browserOptions.capabilities.browserName}`);
-    
+    const isChrome = !process.env.BROWSER || process.env.BROWSER === 'chrome';
+    if (isChrome) {
+      const modeLabel = options.mode === 'pages' ? 'explicit URL list' : 'crawl from start URL';
+      console.log(
+        headlessChrome
+          ? `Chrome: headless (--headless=new) — ${modeLabel}`
+          : `Chrome: visible window — ${modeLabel}`
+      );
+    }
+
     try {
       browser = await remote(browserOptions);
       global.browser = browser;
@@ -638,9 +664,8 @@ async function runAccessibilityTest() {
         errors: [...pagesWithA11yIssues, ...pageErrors],
       };
 
-      // Match crawl+test behavior: generate one consolidated summary report
-      // when multiple explicit pages are tested.
-      if (pagesToTest.length > 1) {
+      // Match crawl+test behavior: generate one consolidated summary whenever at least one page was tested.
+      if (pagesToTest.length >= 1) {
         const firstUrl = pagesToTest[0];
         const domain = new URL(firstUrl).hostname.replace(/^www\./, '');
         const totalDurationMs = Date.now() - testStartTime;
@@ -670,13 +695,27 @@ async function runAccessibilityTest() {
       // `require('…')` usage and changed discovery. CLI-only: auth + axe tag/rule filters.
       const crawlOnly = options.crawlOnly;
       const useSitemapFirst = options.sitemapFirst === true;
+      // Match typical project usage: maxPages 10, maxDepth 50 (override with A11Y_MAX_PAGES).
+      const rawMaxPages = Number.parseInt(process.env.A11Y_MAX_PAGES || '10', 10);
+      const crawlMaxPages =
+        Number.isFinite(rawMaxPages) && rawMaxPages > 0 ? rawMaxPages : 10;
+      if (headlessChrome) {
+        console.warn('');
+        console.warn(
+          '⚠️  Link crawling from a start URL is unreliable in headless Chrome on many sites (often only 1 page).'
+        );
+        console.warn(
+          '   Use a visible browser (omit HEADLESS / set HEADLESS=false), or use --pages, --from-sitemap, or sitemapFirst in code.'
+        );
+        console.warn('');
+      }
       console.log(
-        `Crawl mode → a11yValidatorFromUrl (maxPages=10, maxDepth=50, sitemapFirst=${useSitemapFirst}). Same API as require('klassijs-a11y-validator').`
+        `Crawl mode → a11yValidatorFromUrl (maxPages=${crawlMaxPages}, maxDepth=50, sitemapFirst=${useSitemapFirst}). Same API as require('klassijs-a11y-validator').`
       );
       results = await a11yValidatorFromUrl(testUrl, {
         count: true,
         crawlOnly,
-        maxPages: 10,
+        maxPages: crawlMaxPages,
         maxDepth: 50,
         skipPrivatePages: true,
         sitemapFirst: useSitemapFirst,
@@ -803,5 +842,7 @@ module.exports = {
     extractSitemapUrlsFromRobotsTxt,
     extractLocUrlsFromXml,
     discoverPagesFromSitemap,
+    resolveHeadlessChrome,
+    buildBrowserOptions,
   },
 };
