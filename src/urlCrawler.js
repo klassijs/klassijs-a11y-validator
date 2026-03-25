@@ -1042,10 +1042,7 @@ async function crawlWebsite(baseUrl, options = {}) {
     console.warn(`   Set maxPages to null or 0 for unlimited crawling, or increase maxPages to discover more pages.`);
     console.warn(`   Current queue depth range: ${Math.min(...urlsToVisit.map(u => u.depth))} - ${Math.max(...urlsToVisit.map(u => u.depth))}\n`);
   }
-  
-  console.info(`${'='.repeat(60)}\n`);
-  
-  // Log pages organized by depth
+
   const pagesByDepth = {};
   urlArray.forEach(url => {
     const pageInfo = pageMap[url];
@@ -1055,17 +1052,7 @@ async function crawlWebsite(baseUrl, options = {}) {
     }
     pagesByDepth[depth].push(url);
   });
-  
-  // Summary only - detailed lists are saved to files
-  console.info('Pages discovered by depth (summary):');
-  Object.keys(pagesByDepth).sort((a, b) => parseInt(a) - parseInt(b)).forEach(depth => {
-    console.info(`  Depth ${depth}: ${pagesByDepth[depth].length} pages`);
-  });
-  
-  console.info(`\n${'='.repeat(60)}`);
-  console.info(`Total: ${urlArray.length} pages from domain: ${baseDomain}`);
-  console.info(`${'='.repeat(60)}\n`);
-  
+
   // Final validation: Filter page map and ensure ALL URLs are from the same domain
   const filteredPageMap = {};
   const validatedUrls = [];
@@ -1107,13 +1094,7 @@ async function crawlWebsite(baseUrl, options = {}) {
     console.error(`\n❌ ERROR: ${duplicateUrls.length} duplicate URL(s) found in results!`);
     console.error(`   This should not happen. Duplicate URLs:`, duplicateUrls);
   }
-  
-  console.info(`\n✅ Validation complete: ${validatedUrls.length} unique pages from domain ${baseDomain}`);
-  if (externalUrls.length === 0 && duplicateUrls.length === 0) {
-    console.info(`   ✓ No external pages found`);
-    console.info(`   ✓ No duplicate pages found`);
-  }
-  
+
   return {
     urls: validatedUrls, // Only validated URLs from same domain, no duplicates
     pageMap: filteredPageMap,

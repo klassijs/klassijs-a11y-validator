@@ -62,22 +62,6 @@ const {
 // Option 1: Use Chrome (requires chromedriver)
 // Option 2: Use Safari (works on macOS without additional drivers)
 // Option 3: Use Firefox (requires geckodriver)
-// Debug: Log environment differences between IDE and terminal
-// This helps identify why it works in IDE but not in terminal
-const debugEnv = process.env.DEBUG_ENV === 'true';
-if (debugEnv) {
-  console.log('\n🔍 Environment Debug Info:');
-  console.log(`  User: ${os.userInfo().username}`);
-  console.log(`  Home: ${os.homedir()}`);
-  console.log(`  Original TMPDIR: ${process.env.TMPDIR || '(not set)'}`);
-  console.log(`  Original TEMP: ${process.env.TEMP || '(not set)'}`);
-  console.log(`  Original TMP: ${process.env.TMP || '(not set)'}`);
-  console.log(`  System tempdir: ${os.tmpdir()}`);
-  console.log(`  Process PID: ${process.pid}`);
-  console.log(`  Node version: ${process.version}`);
-  console.log(`  Platform: ${process.platform}`);
-  console.log('');
-}
 
 // Set custom cache directory if provided (fixes permission issues)
 // WebdriverIO uses TMPDIR or creates cache in system temp
@@ -94,9 +78,6 @@ if (process.env.CACHE_DIR) {
 try {
   if (!fs.existsSync(cacheDir)) {
     fs.mkdirSync(cacheDir, { recursive: true, mode: 0o755 });
-    if (debugEnv) {
-      console.log(`✅ Created cache directory: ${cacheDir}`);
-    }
   }
   
   // Test write permissions
@@ -107,42 +88,15 @@ try {
   // Set environment variables that WebdriverIO uses for cache directory
   // WebdriverIO's @wdio/utils uses os.tmpdir() which checks TMPDIR, TEMP, or TMP
   // IMPORTANT: Set these BEFORE any WebdriverIO code runs
-  const originalTmpdir = process.env.TMPDIR;
   process.env.TMPDIR = cacheDir;
   process.env.TEMP = cacheDir;
   process.env.TMP = cacheDir;
-  
+
   // Also set the specific cache directory env var if WebdriverIO supports it
   process.env.WEBDRIVER_CACHE_DIR = cacheDir;
-  
-  if (debugEnv) {
-    console.log(`  New TMPDIR: ${process.env.TMPDIR}`);
-    console.log(`  New TEMP: ${process.env.TEMP}`);
-    console.log(`  New TMP: ${process.env.TMP}`);
-    console.log(`  os.tmpdir() now returns: ${os.tmpdir()}`);
-    console.log('');
-  }
-  
-  console.log(`Using cache directory: ${cacheDir}`);
-  if (originalTmpdir && originalTmpdir !== cacheDir) {
-    console.log(`⚠️  Note: Overrode TMPDIR from "${originalTmpdir}" to "${cacheDir}"`);
-    console.log(`   This is why it might work in IDE (different TMPDIR) but not in terminal.`);
-  }
 } catch (err) {
   console.error(`❌ Error: Could not create/access cache directory ${cacheDir}: ${err.message}`);
   console.error('Please check permissions or set CACHE_DIR to a writable directory.');
-  if (debugEnv) {
-    console.error(`\nDebug info:`);
-    console.error(`  Directory: ${cacheDir}`);
-    console.error(`  Exists: ${fs.existsSync(cacheDir)}`);
-    try {
-      const stats = fs.statSync(cacheDir);
-      console.error(`  Mode: ${stats.mode.toString(8)}`);
-      console.error(`  UID: ${stats.uid}, GID: ${stats.gid}`);
-    } catch (e) {
-      console.error(`  Cannot stat: ${e.message}`);
-    }
-  }
   process.exit(1);
 }
 
@@ -749,16 +703,11 @@ async function runAccessibilityTest() {
 
     // Display results summary
     if (results.crawlOnly) {
-      // console.log('\n' + '='.repeat(60));
       console.log('Crawl-Only Results');
-      // console.log('='.repeat(60));
       console.log(`Total pages discovered: ${results.totalPages}`);
-      // console.log(`Pages tested: 0 (testing was skipped)`);
       console.log(`\nTo run accessibility tests, remove --crawl-only flag or set CRAWL_ONLY=false`);
     } else {
-      // console.log('\n' + '='.repeat(60));
       console.log('Test Results Summary');
-      // console.log('='.repeat(60));
       console.log(`Total pages discovered: ${results.totalPages}`);
       if (typeof results.pagesTested === 'number') {
         console.log(`Pages tested: ${results.pagesTested}`);
@@ -766,32 +715,14 @@ async function runAccessibilityTest() {
       if (typeof results.totalErrors === 'number') {
         console.log(`Total accessibility errors: ${results.totalErrors}`);
       }
-      // console.log(`Pages with errors: ${results.errors.length}`);
-    }
-
-    if (results.errors.length > 0) {
-      console.log('\nPages with accessibility issues:');
-      results.errors.forEach((error, index) => {
-        console.log(`  ${index + 1}. ${error.url}`);
-        if (error.errors) {
-          console.log(`     Errors: ${error.errors}`);
-        }
-        if (error.error) {
-          console.log(`     Error: ${error.error}`);
-        }
-      });
     }
 
     if (executionErrors.length > 0) {
       console.log(`\nIgnored ${executionErrors.length} transient browser execution error(s) (not included in accessibility summary).`);
     }
 
-    // console.log('\n' + '='.repeat(60));
     console.log('Reports Generated');
-    // console.log('='.repeat(60));
     console.log(`Check the reports directory: ${global.paths.reports}`);
-    // console.log(`Reports are organized by: ${global.browserName}/${global.env.envName}/accessibilityReport/`);
-    // console.log('Each page has both HTML and JSON report files.\n');
 
     // Return results for further processing if needed
     return results;

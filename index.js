@@ -412,8 +412,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
       };
       
       fs.writeFileSync(pageMapFile, JSON.stringify(sitemapData, null, 2), 'utf-8');
-      console.info(`\nPage map (JSON) saved to: ${pageMapFile}`);
-      
+
       // Save human-readable page list
       const pageListFile = `${pageMapDir}/${baseFileName}.txt`;
       let pageListContent = `Sitemap for: ${domain}\n`;
@@ -444,8 +443,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
       });
       
       fs.writeFileSync(pageListFile, pageListContent, 'utf-8');
-      console.info(`Page list (TXT) saved to: ${pageListFile}`);
-      
+
       // Save simple HTML sitemap for easy viewing
       const htmlSitemapFile = `${pageMapDir}/${baseFileName}.html`;
       let htmlContent = `<!DOCTYPE html>
@@ -496,8 +494,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
 </html>`;
       
       fs.writeFileSync(htmlSitemapFile, htmlContent, 'utf-8');
-      console.info(`Page list (HTML) saved to: ${htmlSitemapFile}`);
-      
+
       return {
         json: pageMapFile,
         txt: pageListFile,
@@ -539,14 +536,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
     console.info(`Total pages discovered: ${discoveredUrls.length}`);
     console.info(`Maximum depth: ${maxDepth}`);
     console.info(`Crawl duration: ${crawlDuration}`);
-    
-    if (pagesByDepth) {
-      console.info(`\nPages by depth:`);
-      Object.keys(pagesByDepth).sort((a, b) => parseInt(a) - parseInt(b)).forEach(depth => {
-        console.info(`  Depth ${depth}: ${pagesByDepth[depth].length} pages`);
-      });
-    }
-    
+
     console.info(`\nPage relationships:`);
     console.info(`  Pages with children: ${pagesWithChildren.length}`);
     console.info(`  Pages without children (leaf nodes): ${pagesWithoutChildren.length}`);
@@ -599,15 +589,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
   }
   console.info(`Domain: ${domain}`);
   console.info(`Crawl duration: ${crawlDuration}`);
-  
-  // Show breakdown by depth
-  if (pagesByDepth) {
-    console.info(`\nPages by depth:`);
-    Object.keys(pagesByDepth).sort((a, b) => parseInt(a) - parseInt(b)).forEach(depth => {
-      console.info(`  Depth ${depth}: ${pagesByDepth[depth].length} pages`);
-    });
-  }
-  
+
   console.info(`${'='.repeat(60)}\n`);
 
   const results = {
@@ -766,16 +748,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
   console.info(`Pages with errors: ${results.errors.length}`);
   console.info(`Crawl duration: ${crawlDuration}`);
   console.info(`Total duration (crawl + testing): ${totalDuration}`);
-  
-  if (results.testedPages.length > 0) {
-    console.info(`\nAll tested pages:`);
-    results.testedPages.forEach((url, index) => {
-      const pageResult = results.urls.find(u => u.url === url);
-      const status = pageResult?.status === 'has_errors' ? '⚠️' : pageResult?.status === 'error' ? '❌' : '✅';
-      console.info(`  ${status} ${index + 1}. ${url}`);
-    });
-  }
-  
+
   console.info(`${'='.repeat(60)}\n`);
 
   return results;
@@ -1139,11 +1112,6 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
       }
     });
 
-    const incompleteRowsAcrossPages = pageReports.reduce((n, p) => n + p.incomplete.length, 0);
-    console.info(
-      `Comprehensive summary: ${uniqueReportPaths.length} page JSON file(s); ${incompleteRowsAcrossPages} incomplete row(s); ${Object.keys(incompleteByRule).length} unique incomplete rule type(s).`
-    );
-    
     // Calculate statistics
     const totalPages = pageReports.length;
     const pagesWithViolations = new Set();
@@ -1199,14 +1167,12 @@ async function generateComprehensiveReport(results, domain, crawlDuration, total
     
     const jsonFile = `${summaryDir}/${baseFileName}.json`;
     fs.writeFileSync(jsonFile, JSON.stringify(summaryData, null, 2), 'utf-8');
-    console.info(`\nComprehensive summary (JSON) saved to: ${jsonFile}`);
-    
+
     // Generate HTML summary report
     const htmlFile = `${summaryDir}/${baseFileName}.html`;
     const htmlContent = generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, siteWideViolations, siteWideIncomplete);
     fs.writeFileSync(htmlFile, htmlContent, 'utf-8');
-    console.info(`Comprehensive summary (HTML) saved to: ${htmlFile}`);
-    
+
   } catch (error) {
     console.warn('Could not generate comprehensive summary report:', error.message);
   }
@@ -1806,7 +1772,6 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
     </script>
     <script>
         window.toggleSection = function(sectionId) {
-            console.log('toggleSection called with:', sectionId);
             const section = document.getElementById(sectionId);
             const icon = document.getElementById(sectionId + 'Icon');
             if (section) {
@@ -1832,13 +1797,10 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                         icon.classList.add('collapsed');
                     }
                 }
-            } else {
-                console.error('Section not found:', sectionId);
             }
         };
         
         window.toggleViolation = function(violationId) {
-            console.log('toggleViolation called with:', violationId);
             const violation = document.getElementById(violationId);
             const icon = document.getElementById(violationId + 'Icon');
             if (violation) {
@@ -1864,16 +1826,12 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
                         icon.classList.add('collapsed');
                     }
                 }
-            } else {
-                console.error('Violation not found:', violationId);
             }
         };
         
         window.toggleAll = function(sectionId, expand) {
-            console.log('toggleAll called with:', sectionId, expand);
             const section = document.getElementById(sectionId);
             if (!section) {
-                console.error('Section not found:', sectionId);
                 return;
             }
             
@@ -1897,7 +1855,6 @@ function generateSummaryHTML(summaryData, sortedViolations, sortedIncomplete, si
             if (!section) return;
             
             const violations = section.querySelectorAll('.violation-content');
-            console.log('Found violations:', violations.length);
             violations.forEach((v) => {
                 const id = v.id;
                 const icon = document.getElementById(id + 'Icon');
