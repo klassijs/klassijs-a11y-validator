@@ -153,17 +153,53 @@ function getBrowserNameForReportPath() {
   return global.browserName ? String(global.browserName) : 'chrome';
 }
 
-/** Wait for this many `a11yValidator` calls before auto comprehensive summary (legacy: 2). */
-const MIN_SINGLE_PAGE_CALLS_BEFORE_COMPREHENSIVE_SUMMARY = 2;
+/** Delay (ms) after the last `a11yValidator` call before generating one comprehensive summary. */
+const SINGLE_PAGE_SUMMARY_DEBOUNCE_MS = 2000;
 
 function getLegacySinglePageSummaryState() {
   if (!global.__a11yLegacySinglePageSummaryState) {
     global.__a11yLegacySinglePageSummaryState = {
       startedAtMs: Date.now(),
       pageCount: 0,
+      debounceTimer: null,
+      flushPromise: null,
     };
   }
   return global.__a11yLegacySinglePageSummaryState;
+}
+
+function getSinglePageBatchState() {
+  if (!global.__a11ySinglePageBatchState) {
+    global.__a11ySinglePageBatchState = {
+      active: false,
+      startedAtMs: 0,
+      pageCount: 0,
+    };
+  }
+  return global.__a11ySinglePageBatchState;
+}
+
+function beginSinglePageBatch() {
+  const batch = getSinglePageBatchState();
+  batch.active = true;
+  batch.startedAtMs = Date.now();
+  batch.pageCount = 0;
+}
+
+async function endSinglePageBatch(count = true) {
+  const batch = getSinglePageBatchState();
+  if (!batch.active) return;
+
+  const shouldGenerate = !!count && batch.pageCount > 0;
+  if (shouldGenerate) {
+    const domain = resolveDomainForSummary();
+    const totalDuration = formatDuration(Date.now() - batch.startedAtMs);
+    await generateComprehensiveReport({}, domain, '0s', totalDuration);
+  }
+
+  batch.active = false;
+  batch.startedAtMs = 0;
+  batch.pageCount = 0;
 }
 
 function formatDuration(ms) {
@@ -190,17 +226,40 @@ function resolveDomainForSummary() {
 
 /**
  * Single-page API (`a11yValidator`) is invoked once per page (e.g. each Scenario Outline row).
- * No summary until MIN_SINGLE_PAGE_CALLS_BEFORE_COMPREHENSIVE_SUMMARY pages (default 2; avoids early
- * partial summaries). After that, regenerate each call so every JSON from the run stays included.
+ * Unlike crawl mode, there is no enclosing loop, so the library can't know which call is "last".
+ * To avoid generating partial summaries, debounce: generate one comprehensive summary after the
+ * last page has completed (no calls for SINGLE_PAGE_SUMMARY_DEBOUNCE_MS).
  */
-async function refreshComprehensiveSummaryForSinglePageFlow(count, pageCount) {
+async function flushComprehensiveSummaryForSinglePageFlow(count) {
   if (!count) return;
-  if (pageCount < MIN_SINGLE_PAGE_CALLS_BEFORE_COMPREHENSIVE_SUMMARY) return;
   const state = getLegacySinglePageSummaryState();
-  const now = Date.now();
-  const domain = resolveDomainForSummary();
-  const totalDuration = formatDuration(now - state.startedAtMs);
-  await generateComprehensiveReport({}, domain, '0s', totalDuration);
+  if (state.pageCount <= 0) return;
+
+  const doFlush = async () => {
+    const now = Date.now();
+    const domain = resolveDomainForSummary();
+    const totalDuration = formatDuration(now - state.startedAtMs);
+    await generateComprehensiveReport({}, domain, '0s', totalDuration);
+  };
+
+  // Ensure only one flush runs at a time.
+  state.flushPromise = (state.flushPromise || Promise.resolve()).then(doFlush, doFlush);
+  await state.flushPromise;
+}
+
+function scheduleComprehensiveSummaryForSinglePageFlow(count) {
+  if (!count) return;
+  const state = getLegacySinglePageSummaryState();
+  if (state.debounceTimer) {
+    clearTimeout(state.debounceTimer);
+    state.debounceTimer = null;
+  }
+  state.debounceTimer = setTimeout(() => {
+    state.debounceTimer = null;
+    flushComprehensiveSummaryForSinglePageFlow(count).catch((e) => {
+      console.warn('Comprehensive summary flush failed:', e?.message || e);
+    });
+  }, SINGLE_PAGE_SUMMARY_DEBOUNCE_MS);
 }
 
 /**
@@ -224,9 +283,15 @@ async function a11yValidator(pageName, countOrOptions = false, options = {}) {
   await getA11yValidator(pageName, validatorOptions);
   await accessibilityError(count);
 
+  const batch = getSinglePageBatchState();
+  if (batch.active) {
+    batch.pageCount += 1;
+    return;
+  }
+
   const state = getLegacySinglePageSummaryState();
   state.pageCount += 1;
-  await refreshComprehensiveSummaryForSinglePageFlow(count, state.pageCount);
+  scheduleComprehensiveSummaryForSinglePageFlow(count);
 }
 
 /**
@@ -805,6 +870,8 @@ async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
     excludeTags = [],
     excludeRules = [],
     includeTags = null,
+    pageLoadTimeoutMs = 30000,
+    postLoadPauseMs = 1000,
   } = options;
 
   if (!pagesFilePath) throw new Error('pagesFilePath is required');
@@ -916,12 +983,12 @@ async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
           return readyState === 'complete';
         },
         {
-          timeout: 10000,
+          timeout: pageLoadTimeoutMs,
           timeoutMsg: 'Page did not load completely',
         }
       );
 
-      await global.browser.pause(500);
+      await global.browser.pause(postLoadPauseMs);
 
       // Ensure we're in the correct tab (not the WebdriverIO Bidi tab)
       try {
@@ -948,7 +1015,12 @@ async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
               .replace(/^_|_$/g, '')
               .substring(0, 50) || 'page';
 
-      await getA11yValidator(pageName, { excludeTags, excludeRules, includeTags });
+      await getA11yValidator(pageName, {
+        excludeTags,
+        excludeRules,
+        includeTags,
+        reportPageUrl: pageUrl,
+      });
 
       const pageErrors = getAccessibilityError();
       results.pagesTested++;
@@ -1930,6 +2002,8 @@ async function accessibilityError(count) {
 }
 
 module.exports = {
+  beginSinglePageBatch,
+  endSinglePageBatch,
   a11yValidator,
   a11yValidatorFromUrl,
   a11yValidatorFromPagesFile,
