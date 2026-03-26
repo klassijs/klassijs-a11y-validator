@@ -153,12 +153,14 @@ function getBrowserNameForReportPath() {
   return global.browserName ? String(global.browserName) : 'chrome';
 }
 
+/** Wait for this many `a11yValidator` calls before auto comprehensive summary (legacy: 2). */
+const MIN_SINGLE_PAGE_CALLS_BEFORE_COMPREHENSIVE_SUMMARY = 2;
+
 function getLegacySinglePageSummaryState() {
   if (!global.__a11yLegacySinglePageSummaryState) {
     global.__a11yLegacySinglePageSummaryState = {
       startedAtMs: Date.now(),
       pageCount: 0,
-      hasGeneratedSummary: false,
     };
   }
   return global.__a11yLegacySinglePageSummaryState;
@@ -186,17 +188,19 @@ function resolveDomainForSummary() {
   }
 }
 
-async function maybeGenerateSummaryForLegacySinglePageFlow(count) {
+/**
+ * Single-page API (`a11yValidator`) is invoked once per page (e.g. each Scenario Outline row).
+ * No summary until MIN_SINGLE_PAGE_CALLS_BEFORE_COMPREHENSIVE_SUMMARY pages (default 2; avoids early
+ * partial summaries). After that, regenerate each call so every JSON from the run stays included.
+ */
+async function refreshComprehensiveSummaryForSinglePageFlow(count, pageCount) {
+  if (!count) return;
+  if (pageCount < MIN_SINGLE_PAGE_CALLS_BEFORE_COMPREHENSIVE_SUMMARY) return;
   const state = getLegacySinglePageSummaryState();
-  // Only generate for legacy single-page flows when caller indicates "final/total"
-  // using count=true and we've validated more than one page.
-  if (!count || state.pageCount <= 1 || state.hasGeneratedSummary) return;
-
   const now = Date.now();
   const domain = resolveDomainForSummary();
   const totalDuration = formatDuration(now - state.startedAtMs);
   await generateComprehensiveReport({}, domain, '0s', totalDuration);
-  state.hasGeneratedSummary = true;
 }
 
 /**
@@ -212,17 +216,17 @@ async function a11yValidator(pageName, countOrOptions = false, options = {}) {
   // Handle backward compatibility: if countOrOptions is boolean, treat it as count
   const count = typeof countOrOptions === 'boolean' ? countOrOptions : false;
   const a11yOptions = typeof countOrOptions === 'object' ? countOrOptions : options;
-  
+
+  const validatorOptions = { ...a11yOptions };
+  delete validatorOptions.deferComprehensiveSummary;
+
   // Run the accessibility report and wait for it to complete
-  await getA11yValidator(pageName, a11yOptions);
+  await getA11yValidator(pageName, validatorOptions);
   await accessibilityError(count);
 
-  // Backward-compatible behavior for legacy tests:
-  // if the single-page API is called for multiple pages in one run, auto-generate
-  // comprehensive summary without requiring test code changes.
   const state = getLegacySinglePageSummaryState();
   state.pageCount += 1;
-  await maybeGenerateSummaryForLegacySinglePageFlow(count);
+  await refreshComprehensiveSummaryForSinglePageFlow(count, state.pageCount);
 }
 
 /**

@@ -31,29 +31,6 @@ async function getA11yValidator(pageName, options = {}) {
     reportPageUrl = null,
   } = options;
 
-  // Ensure we're in the correct tab (not the WebdriverIO Bidi tab)
-  try {
-    const windowHandles = await browser.getWindowHandles();
-    if (windowHandles.length > 1) {
-      // Get the current URL to identify the main page tab
-      const currentUrl = await browser.getUrl();
-      // If current URL is not a valid page URL (might be Bidi tab), switch to first tab
-      if (
-        !currentUrl ||
-        currentUrl === 'about:blank' ||
-        currentUrl.startsWith('about:') ||
-        currentUrl.includes('webdriver') ||
-        currentUrl.includes('bidi')
-      ) {
-        // Switch to the first window handle (usually the main page)
-        await browser.switchToWindow(windowHandles[0]);
-      }
-    }
-  } catch (switchErr) {
-    // If window switching fails, continue anyway
-    console.warn('Could not switch windows:', switchErr.message);
-  }
-
   await browser.execute(require('axe-core').source);
   const axeCheck = await browser.execute(() => {
     return typeof axe !== 'undefined';
