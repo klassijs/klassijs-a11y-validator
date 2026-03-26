@@ -339,6 +339,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
     sitemapFirst = false,
     sitemapUrls = null,
     sitemapUrl = null,
+    generateComprehensiveSummary = true,
   } = options;
 
   if (!isValidUrl(url)) {
@@ -818,27 +819,31 @@ async function a11yValidatorFromUrl(url, options = {}) {
   const totalDuration = formatDuration(totalDurationMs);
 
   // Generate comprehensive summary report (groups pages by same issues)
-  await generateComprehensiveReport(results, domain, crawlDuration, totalDuration);
+  if (generateComprehensiveSummary) {
+    await generateComprehensiveReport(results, domain, crawlDuration, totalDuration);
+  }
 
   // Report final results
   await accessibilityError(count);
   
-  console.info(`\n${'='.repeat(60)}`);
-  console.info(`Final Validation Summary`);
-  console.info(`${'='.repeat(60)}`);
-  console.info(`Domain: ${domain}`);
-  console.info(`Total pages discovered: ${results.totalPages}`);
-  if (results.pagesSkipped > 0) {
-    console.info(`Pages tested: ${results.pagesTested}/${results.pagesToTest} (${results.pagesSkipped} pages skipped due to maxPagesToTest limit)`);
-  } else {
-    console.info(`Pages tested: ${results.pagesTested} (${results.pagesTested === results.totalPages ? 'ALL pages tested ✓' : 'Some pages may have been skipped'})`);
-  }
-  console.info(`Total accessibility errors: ${results.totalErrors}`);
-  console.info(`Pages with errors: ${results.errors.length}`);
-  console.info(`Crawl duration: ${crawlDuration}`);
-  console.info(`Total duration (crawl + testing): ${totalDuration}`);
+  if (generateComprehensiveSummary) {
+    console.info(`\n${'='.repeat(60)}`);
+    console.info(`Final Validation Summary`);
+    console.info(`${'='.repeat(60)}`);
+    console.info(`Domain: ${domain}`);
+    console.info(`Total pages discovered: ${results.totalPages}`);
+    if (results.pagesSkipped > 0) {
+      console.info(`Pages tested: ${results.pagesTested}/${results.pagesToTest} (${results.pagesSkipped} pages skipped due to maxPagesToTest limit)`);
+    } else {
+      console.info(`Pages tested: ${results.pagesTested} (${results.pagesTested === results.totalPages ? 'ALL pages tested ✓' : 'Some pages may have been skipped'})`);
+    }
+    console.info(`Total accessibility errors: ${results.totalErrors}`);
+    console.info(`Pages with errors: ${results.errors.length}`);
+    console.info(`Crawl duration: ${crawlDuration}`);
+    console.info(`Total duration (crawl + testing): ${totalDuration}`);
 
-  console.info(`${'='.repeat(60)}\n`);
+    console.info(`${'='.repeat(60)}\n`);
+  }
 
   return results;
 }
@@ -872,6 +877,7 @@ async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
     includeTags = null,
     pageLoadTimeoutMs = 30000,
     postLoadPauseMs = 1000,
+    generateComprehensiveSummary = true,
   } = options;
 
   if (!pagesFilePath) throw new Error('pagesFilePath is required');
@@ -1051,7 +1057,7 @@ async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
   const totalDuration = formatDuration(totalDurationMs);
 
   // Match crawl-based flow: generate summary whenever at least one page was tested (not only when >1).
-  if (results.testedPages.length > 0) {
+  if (generateComprehensiveSummary && results.testedPages.length > 0) {
     await generateComprehensiveReport(results, domain, crawlDuration, totalDuration);
   }
 
