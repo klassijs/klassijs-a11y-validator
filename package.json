@@ -1,6 +1,6 @@
 {
   "name": "klassijs-a11y-validator",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "This accessibility verification function serves as an automated accessibility testing tool that helps identify and document accessibility issues based on WCAG standards.",
   "creator": {
     "name": "Larry Goddard",

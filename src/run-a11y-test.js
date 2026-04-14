@@ -50,7 +50,7 @@ const { astellen } = require('klassijs-astellen');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
-const { authenticate } = require('./urlCrawler');
+const { authenticate, normalizePathPrefix, isWithinPathPrefix } = require('./urlCrawler');
 const { buildAuthConfig } = require('./auth');
 const {
   discoverPagesFromSitemap,
@@ -447,10 +447,18 @@ const parseCliOptions = async () => {
           .map((value) => normalizeUrl(value, baseUrl || undefined))
       : [];
 
-    const sitemapPages = await discoverPagesFromSitemap({
+    let sitemapPages = await discoverPagesFromSitemap({
       baseUrl,
       sitemapUrls,
     });
+    try {
+      const pp = normalizePathPrefix(new URL(baseUrl).pathname);
+      if (pp !== '/') {
+        sitemapPages = sitemapPages.filter((u) => isWithinPathPrefix(u, pp));
+      }
+    } catch (_e) {
+      // keep full sitemap list if base URL is invalid
+    }
     pages = [...pages, ...sitemapPages];
   }
 

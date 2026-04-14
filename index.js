@@ -2,7 +2,14 @@ const path = require('path');
 const fs = require("fs");
 
 const { getA11yValidator, getAccessibilityError, getAccessibilityTotalError, resetErrorCounts } = require('./src/accessibilityLib');
-const { crawlWebsite, isValidUrl, authenticate, isPrivatePage } = require('./src/urlCrawler');
+const {
+  crawlWebsite,
+  isValidUrl,
+  authenticate,
+  isPrivatePage,
+  normalizePathPrefix,
+  isWithinPathPrefix,
+} = require('./src/urlCrawler');
 const { discoverPagesFromSitemap } = require('./src/sitemapDiscovery');
 const { getPagesFromFile } = require('./src/pagesFileParser');
 const { dateTime } = require('./utils/dateTime');
@@ -146,15 +153,53 @@ function getBrowserNameForReportPath() {
   return global.browserName ? String(global.browserName) : 'chrome';
 }
 
+/** Delay (ms) after the last `a11yValidator` call before generating one comprehensive summary. */
+const SINGLE_PAGE_SUMMARY_DEBOUNCE_MS = 2000;
+
 function getLegacySinglePageSummaryState() {
   if (!global.__a11yLegacySinglePageSummaryState) {
     global.__a11yLegacySinglePageSummaryState = {
       startedAtMs: Date.now(),
       pageCount: 0,
-      hasGeneratedSummary: false,
+      debounceTimer: null,
+      flushPromise: null,
     };
   }
   return global.__a11yLegacySinglePageSummaryState;
+}
+
+function getSinglePageBatchState() {
+  if (!global.__a11ySinglePageBatchState) {
+    global.__a11ySinglePageBatchState = {
+      active: false,
+      startedAtMs: 0,
+      pageCount: 0,
+    };
+  }
+  return global.__a11ySinglePageBatchState;
+}
+
+function beginSinglePageBatch() {
+  const batch = getSinglePageBatchState();
+  batch.active = true;
+  batch.startedAtMs = Date.now();
+  batch.pageCount = 0;
+}
+
+async function endSinglePageBatch(count = true) {
+  const batch = getSinglePageBatchState();
+  if (!batch.active) return;
+
+  const shouldGenerate = !!count && batch.pageCount > 0;
+  if (shouldGenerate) {
+    const domain = resolveDomainForSummary();
+    const totalDuration = formatDuration(Date.now() - batch.startedAtMs);
+    await generateComprehensiveReport({}, domain, '0s', totalDuration);
+  }
+
+  batch.active = false;
+  batch.startedAtMs = 0;
+  batch.pageCount = 0;
 }
 
 function formatDuration(ms) {
@@ -179,17 +224,42 @@ function resolveDomainForSummary() {
   }
 }
 
-async function maybeGenerateSummaryForLegacySinglePageFlow(count) {
+/**
+ * Single-page API (`a11yValidator`) is invoked once per page (e.g. each Scenario Outline row).
+ * Unlike crawl mode, there is no enclosing loop, so the library can't know which call is "last".
+ * To avoid generating partial summaries, debounce: generate one comprehensive summary after the
+ * last page has completed (no calls for SINGLE_PAGE_SUMMARY_DEBOUNCE_MS).
+ */
+async function flushComprehensiveSummaryForSinglePageFlow(count) {
+  if (!count) return;
   const state = getLegacySinglePageSummaryState();
-  // Only generate for legacy single-page flows when caller indicates "final/total"
-  // using count=true and we've validated more than one page.
-  if (!count || state.pageCount <= 1 || state.hasGeneratedSummary) return;
+  if (state.pageCount <= 0) return;
 
-  const now = Date.now();
-  const domain = resolveDomainForSummary();
-  const totalDuration = formatDuration(now - state.startedAtMs);
-  await generateComprehensiveReport({}, domain, '0s', totalDuration);
-  state.hasGeneratedSummary = true;
+  const doFlush = async () => {
+    const now = Date.now();
+    const domain = resolveDomainForSummary();
+    const totalDuration = formatDuration(now - state.startedAtMs);
+    await generateComprehensiveReport({}, domain, '0s', totalDuration);
+  };
+
+  // Ensure only one flush runs at a time.
+  state.flushPromise = (state.flushPromise || Promise.resolve()).then(doFlush, doFlush);
+  await state.flushPromise;
+}
+
+function scheduleComprehensiveSummaryForSinglePageFlow(count) {
+  if (!count) return;
+  const state = getLegacySinglePageSummaryState();
+  if (state.debounceTimer) {
+    clearTimeout(state.debounceTimer);
+    state.debounceTimer = null;
+  }
+  state.debounceTimer = setTimeout(() => {
+    state.debounceTimer = null;
+    flushComprehensiveSummaryForSinglePageFlow(count).catch((e) => {
+      console.warn('Comprehensive summary flush failed:', e?.message || e);
+    });
+  }, SINGLE_PAGE_SUMMARY_DEBOUNCE_MS);
 }
 
 /**
@@ -205,17 +275,23 @@ async function a11yValidator(pageName, countOrOptions = false, options = {}) {
   // Handle backward compatibility: if countOrOptions is boolean, treat it as count
   const count = typeof countOrOptions === 'boolean' ? countOrOptions : false;
   const a11yOptions = typeof countOrOptions === 'object' ? countOrOptions : options;
-  
+
+  const validatorOptions = { ...a11yOptions };
+  delete validatorOptions.deferComprehensiveSummary;
+
   // Run the accessibility report and wait for it to complete
-  await getA11yValidator(pageName, a11yOptions);
+  await getA11yValidator(pageName, validatorOptions);
   await accessibilityError(count);
 
-  // Backward-compatible behavior for legacy tests:
-  // if the single-page API is called for multiple pages in one run, auto-generate
-  // comprehensive summary without requiring test code changes.
+  const batch = getSinglePageBatchState();
+  if (batch.active) {
+    batch.pageCount += 1;
+    return;
+  }
+
   const state = getLegacySinglePageSummaryState();
   state.pageCount += 1;
-  await maybeGenerateSummaryForLegacySinglePageFlow(count);
+  scheduleComprehensiveSummaryForSinglePageFlow(count);
 }
 
 /**
@@ -263,6 +339,7 @@ async function a11yValidatorFromUrl(url, options = {}) {
     sitemapFirst = false,
     sitemapUrls = null,
     sitemapUrl = null,
+    generateComprehensiveSummary = true,
   } = options;
 
   if (!isValidUrl(url)) {
@@ -301,19 +378,32 @@ async function a11yValidatorFromUrl(url, options = {}) {
       if (Array.isArray(discoveredFromSitemap) && discoveredFromSitemap.length > 0) {
         const effectiveMaxPages = !maxPages || maxPages <= 0 ? Number.MAX_SAFE_INTEGER : maxPages;
 
-        const filteredUrls = discoveredFromSitemap
-          .filter((pageUrl) => {
-            if (!excludePaths || excludePaths.length === 0) return true;
-            return !excludePaths.some((pattern) => {
-              try {
-                const urlObj = new URL(pageUrl);
-                return urlObj.pathname.includes(pattern);
-              } catch (_e) {
-                return String(pageUrl).includes(pattern);
-              }
-            });
-          })
-          .slice(0, effectiveMaxPages);
+        let filteredUrls = discoveredFromSitemap.filter((pageUrl) => {
+          if (!excludePaths || excludePaths.length === 0) return true;
+          return !excludePaths.some((pattern) => {
+            try {
+              const urlObj = new URL(pageUrl);
+              return urlObj.pathname.includes(pattern);
+            } catch (_e) {
+              return String(pageUrl).includes(pattern);
+            }
+          });
+        });
+
+        // Match crawlWebsite: when the start URL is under a subpath (e.g. /grovemusic), only include
+        // sitemap URLs under that path. Otherwise sitemap-first pulls the whole site.
+        const pathPrefix = (() => {
+          try {
+            return normalizePathPrefix(new URL(url).pathname);
+          } catch (_e) {
+            return '/';
+          }
+        })();
+        if (pathPrefix !== '/') {
+          filteredUrls = filteredUrls.filter((pageUrl) => isWithinPathPrefix(pageUrl, pathPrefix));
+        }
+
+        filteredUrls = filteredUrls.slice(0, effectiveMaxPages);
 
         if (filteredUrls.length > 0) {
           const domain = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
@@ -729,27 +819,31 @@ async function a11yValidatorFromUrl(url, options = {}) {
   const totalDuration = formatDuration(totalDurationMs);
 
   // Generate comprehensive summary report (groups pages by same issues)
-  await generateComprehensiveReport(results, domain, crawlDuration, totalDuration);
+  if (generateComprehensiveSummary) {
+    await generateComprehensiveReport(results, domain, crawlDuration, totalDuration);
+  }
 
   // Report final results
   await accessibilityError(count);
   
-  console.info(`\n${'='.repeat(60)}`);
-  console.info(`Final Validation Summary`);
-  console.info(`${'='.repeat(60)}`);
-  console.info(`Domain: ${domain}`);
-  console.info(`Total pages discovered: ${results.totalPages}`);
-  if (results.pagesSkipped > 0) {
-    console.info(`Pages tested: ${results.pagesTested}/${results.pagesToTest} (${results.pagesSkipped} pages skipped due to maxPagesToTest limit)`);
-  } else {
-    console.info(`Pages tested: ${results.pagesTested} (${results.pagesTested === results.totalPages ? 'ALL pages tested ✓' : 'Some pages may have been skipped'})`);
-  }
-  console.info(`Total accessibility errors: ${results.totalErrors}`);
-  console.info(`Pages with errors: ${results.errors.length}`);
-  console.info(`Crawl duration: ${crawlDuration}`);
-  console.info(`Total duration (crawl + testing): ${totalDuration}`);
+  if (generateComprehensiveSummary) {
+    console.info(`\n${'='.repeat(60)}`);
+    console.info(`Final Validation Summary`);
+    console.info(`${'='.repeat(60)}`);
+    console.info(`Domain: ${domain}`);
+    console.info(`Total pages discovered: ${results.totalPages}`);
+    if (results.pagesSkipped > 0) {
+      console.info(`Pages tested: ${results.pagesTested}/${results.pagesToTest} (${results.pagesSkipped} pages skipped due to maxPagesToTest limit)`);
+    } else {
+      console.info(`Pages tested: ${results.pagesTested} (${results.pagesTested === results.totalPages ? 'ALL pages tested ✓' : 'Some pages may have been skipped'})`);
+    }
+    console.info(`Total accessibility errors: ${results.totalErrors}`);
+    console.info(`Pages with errors: ${results.errors.length}`);
+    console.info(`Crawl duration: ${crawlDuration}`);
+    console.info(`Total duration (crawl + testing): ${totalDuration}`);
 
-  console.info(`${'='.repeat(60)}\n`);
+    console.info(`${'='.repeat(60)}\n`);
+  }
 
   return results;
 }
@@ -781,6 +875,9 @@ async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
     excludeTags = [],
     excludeRules = [],
     includeTags = null,
+    pageLoadTimeoutMs = 30000,
+    postLoadPauseMs = 1000,
+    generateComprehensiveSummary = true,
   } = options;
 
   if (!pagesFilePath) throw new Error('pagesFilePath is required');
@@ -892,12 +989,12 @@ async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
           return readyState === 'complete';
         },
         {
-          timeout: 10000,
+          timeout: pageLoadTimeoutMs,
           timeoutMsg: 'Page did not load completely',
         }
       );
 
-      await global.browser.pause(500);
+      await global.browser.pause(postLoadPauseMs);
 
       // Ensure we're in the correct tab (not the WebdriverIO Bidi tab)
       try {
@@ -924,7 +1021,12 @@ async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
               .replace(/^_|_$/g, '')
               .substring(0, 50) || 'page';
 
-      await getA11yValidator(pageName, { excludeTags, excludeRules, includeTags });
+      await getA11yValidator(pageName, {
+        excludeTags,
+        excludeRules,
+        includeTags,
+        reportPageUrl: pageUrl,
+      });
 
       const pageErrors = getAccessibilityError();
       results.pagesTested++;
@@ -955,7 +1057,7 @@ async function a11yValidatorFromPagesFile(pagesFilePath, options = {}) {
   const totalDuration = formatDuration(totalDurationMs);
 
   // Match crawl-based flow: generate summary whenever at least one page was tested (not only when >1).
-  if (results.testedPages.length > 0) {
+  if (generateComprehensiveSummary && results.testedPages.length > 0) {
     await generateComprehensiveReport(results, domain, crawlDuration, totalDuration);
   }
 
@@ -1905,9 +2007,15 @@ async function accessibilityError(count) {
   }
 }
 
-module.exports = { 
+module.exports = {
+  beginSinglePageBatch,
+  endSinglePageBatch,
   a11yValidator,
   a11yValidatorFromUrl,
   a11yValidatorFromPagesFile,
   generateComprehensiveReport,
+  /** Same path scoping as crawl / sitemap-first; use if you call discoverPagesFromSitemap yourself. */
+  discoverPagesFromSitemap,
+  normalizePathPrefix,
+  isWithinPathPrefix,
 };

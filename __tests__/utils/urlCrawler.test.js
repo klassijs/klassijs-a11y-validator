@@ -1,4 +1,10 @@
-const { crawlWebsite, discoverPageLinks, isValidUrl } = require('../../src/urlCrawler');
+const {
+  crawlWebsite,
+  discoverPageLinks,
+  isValidUrl,
+  normalizePathPrefix,
+  isWithinPathPrefix,
+} = require('../../src/urlCrawler');
 
 describe('urlCrawler utility', () => {
   let mockBrowser;
@@ -21,6 +27,23 @@ describe('urlCrawler utility', () => {
     delete process.env.A11Y_POST_LOAD_DELAY_MS;
     delete global.browser;
     jest.clearAllMocks();
+  });
+
+  describe('normalizePathPrefix / isWithinPathPrefix', () => {
+    test('root path allows any path on same host', () => {
+      expect(isWithinPathPrefix('https://ex.com/a', '/')).toBe(true);
+    });
+
+    test('subpath restricts to that subtree', () => {
+      expect(isWithinPathPrefix('https://ex.com/grovemusic', '/grovemusic')).toBe(true);
+      expect(isWithinPathPrefix('https://ex.com/grovemusic/about', '/grovemusic')).toBe(true);
+      expect(isWithinPathPrefix('https://ex.com/groveart', '/grovemusic')).toBe(false);
+      expect(isWithinPathPrefix('https://ex.com/', '/grovemusic')).toBe(false);
+    });
+
+    test('normalizePathPrefix trims trailing slash', () => {
+      expect(normalizePathPrefix('/grovemusic/')).toBe('/grovemusic');
+    });
   });
 
   describe('isValidUrl', () => {

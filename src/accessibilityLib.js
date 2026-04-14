@@ -19,6 +19,7 @@ astellen.set('BROWSER_NAME', browserName);
  * @param {Array<string>} options.excludeTags - WCAG tags to exclude (e.g., ['wcag22aa', 'best-practice'])
  * @param {Array<string>} options.excludeRules - Specific rule IDs to exclude (e.g., ['color-contrast', 'image-alt'])
  * @param {Array<string>} options.includeTags - Specific tags to include (if provided, only these tags will be checked)
+ * @param {string} [options.reportPageUrl] - If axe returns about:blank or a bad URL, use this for saved report `url`
  * @returns {Promise<Object>} - Axe results object
  */
 async function getA11yValidator(pageName, options = {}) {
@@ -27,24 +28,8 @@ async function getA11yValidator(pageName, options = {}) {
     excludeTags = [],
     excludeRules = [],
     includeTags = null, // If provided, only check these tags (overrides default)
+    reportPageUrl = null,
   } = options;
-
-  // Ensure we're in the correct tab (not the WebdriverIO Bidi tab)
-  try {
-    const windowHandles = await browser.getWindowHandles();
-    if (windowHandles.length > 1) {
-      // Get the current URL to identify the main page tab
-      const currentUrl = await browser.getUrl();
-      // If current URL is not a valid page URL (might be Bidi tab), switch to first tab
-      if (!currentUrl || currentUrl.includes('webdriver') || currentUrl.includes('bidi')) {
-        // Switch to the first window handle (usually the main page)
-        await browser.switchToWindow(windowHandles[0]);
-      }
-    }
-  } catch (switchErr) {
-    // If window switching fails, continue anyway
-    console.warn('Could not switch windows:', switchErr.message);
-  }
 
   await browser.execute(require('axe-core').source);
   const axeCheck = await browser.execute(() => {
@@ -152,7 +137,33 @@ async function getA11yValidator(pageName, options = {}) {
     console.error('Axe error:', results.error);
     return null;
   }
-  
+
+  // Report `url`: axe sometimes returns about:blank or a BiDi/internal URL even when the page under test is correct.
+  if (reportPageUrl && String(reportPageUrl).trim()) {
+    try {
+      results.url = new URL(String(reportPageUrl).trim()).href;
+    } catch (_e) {
+      /* keep axe url */
+    }
+  } else {
+    try {
+      const axeUrl = results.url != null ? String(results.url).trim() : '';
+      const axeBad =
+        !axeUrl ||
+        axeUrl === 'about:blank' ||
+        axeUrl.startsWith('about:') ||
+        !/^https?:\/\//i.test(axeUrl);
+      if (axeBad) {
+        const live = await browser.getUrl();
+        if (live && /^https?:\/\//i.test(String(live).trim())) {
+          results.url = String(live).trim();
+        }
+      }
+    } catch (_e) {
+      /* keep axe url */
+    }
+  }
+
   // Generate report and set error counts
   const additionalData = await browser.capabilities;
   const browserName = astellen.get('BROWSER_NAME');
