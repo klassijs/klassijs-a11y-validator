@@ -1,6 +1,6 @@
 {
   "name": "klassijs-a11y-validator",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "This accessibility verification function serves as an automated accessibility testing tool that helps identify and document accessibility issues based on WCAG standards.",
   "creator": {
     "name": "Larry Goddard",
@@ -35,12 +35,12 @@
     "url": "https://github.com/klassijs/klassijs-a11y-validator.git"
   },
   "dependencies": {
-    "axe-core": "^4.11.1",
-    "dotenv": "^16.6.1",
-    "klassijs-astellen": "^1.0.1",
-    "webdriverio": "^9.23.0"
+    "axe-core": "4.11.1",
+    "dotenv": "16.6.1",
+    "klassijs-astellen": "1.0.1",
+    "webdriverio": "9.23.0"
   },
   "devDependencies": {
-    "jest": "^29.7.0"
+    "jest": "29.7.0"
   }
 }
